@@ -1,7 +1,7 @@
 # CAD to GIS Converter (QGIS Plugin)
 
 **Convert DXF/DWG to GIS layers — fast, reliable, and Processing-free.**  
-This plugin adds a menu entry in QGIS that opens a clean dialog for CAD→GIS conversion with a live **Layer Preview**, DWG→DXF fallback, and safe dependency setup.
+This plugin adds a menu entry in QGIS that opens a clean dialog for CAD→GIS conversion with a live **Layer Preview** and Supports block-preserving merge, reprojection, export to GPKG or Shapefile.
 
 > **QGIS:** 3.22+ (tested on 3.28 LTR)  
 > **Python:** 3.9+ (uses QGIS-bundled Python on Windows)
