@@ -1,0 +1,19 @@
+[general]
+name=CAD To GIS Convert
+qgisMinimumVersion=3.22
+qgisMaximumVersion=3.99
+version=1.0.0
+author=Mingyi Hsu
+email=skyflying07@gmail.com
+about=This plugin wraps your conversion engine into a QGIS Plugin tool. Supports DWG input via ODA File Converter or LibreDWG.
+tracker=
+repository=
+category=Analysis
+description=CAD to GIS Converter plugin. Converts DXF/DWG into GIS layers grouped by CAD layers. Supports block-preserving merge, reprojection, export to GPKG or Shapefile, and auto-load.
+hasProcessingProvider=yes
+icon=icons/icon.ico
+experimental=False
+deprecated=False
+tags=DWG,DXF,SHP,GPKG
+license=GPL-3.0-or-later
+changelog=
