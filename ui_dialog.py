@@ -5,13 +5,14 @@ from qgis.PyQt.QtCore import Qt
 from qgis.core import QgsVectorLayer, QgsProject
 from .services.dwg_support import dwg_to_temp_dxf_auto
 from .services import deps as _deps
+from .services import augment as _augment
 
 class CadToGisDialog(QDialog):
     def __init__(self, iface):
         super().__init__(iface.mainWindow())
         self.iface = iface
         self.setWindowTitle("CAD to GIS Converter")
-        self.setMinimumWidth(760)
+        self.setMinimumWidth(820)
 
         grid = QGridLayout()
 
@@ -57,45 +58,55 @@ class CadToGisDialog(QDialog):
         self.merge_tol = QDoubleSpinBox(); self.merge_tol.setDecimals(6); self.merge_tol.setRange(0.0, 1e9); self.merge_tol.setValue(0.0)
         grid.addWidget(self.merge_tol, 6, 1, 1, 2)
 
-        # Row 7: Driver
-        grid.addWidget(QLabel("Output driver"), 7, 0)
-        self.driver = QComboBox(); self.driver.addItems(["GPKG","ESRI Shapefile"])
-        grid.addWidget(self.driver, 7, 1, 1, 2)
+        # Row 7: Spline tolerance (for SPLINE approximation)
+        grid.addWidget(QLabel("Spline tolerance"), 7, 0)
+        self.spline_tol = QDoubleSpinBox(); self.spline_tol.setDecimals(6); self.spline_tol.setRange(0.0, 1e6); self.spline_tol.setValue(0.2)
+        grid.addWidget(self.spline_tol, 7, 1, 1, 2)
 
-        # Row 8: Output path
+        # Row 8: Driver
+        grid.addWidget(QLabel("Output driver"), 8, 0)
+        self.driver = QComboBox(); self.driver.addItems(["GPKG","ESRI Shapefile"])
+        grid.addWidget(self.driver, 8, 1, 1, 2)
+
+        # Row 9: Output path
         self.out_label = QLabel("Output GeoPackage (GPKG)")
-        grid.addWidget(self.out_label, 8, 0)
+        grid.addWidget(self.out_label, 9, 0)
         self.out_edit = QLineEdit()
         self.btn_out = QPushButton("Browse"); self.btn_out.clicked.connect(self.browse_output)
         wrap3 = QWidget(); hb3 = QHBoxLayout(wrap3); hb3.setContentsMargins(0,0,0,0)
         hb3.addWidget(self.out_edit); hb3.addWidget(self.btn_out)
-        grid.addWidget(wrap3, 8, 1, 1, 2)
+        grid.addWidget(wrap3, 9, 1, 1, 2)
 
-        # Row 9: DWG options
-        grid.addWidget(QLabel("DWG converter preference"), 9, 0)
+        # Row 10: DWG options
+        grid.addWidget(QLabel("DWG converter preference"), 10, 0)
         self.dwg_pref = QComboBox(); self.dwg_pref.addItems(["auto","oda","libredwg"])
-        grid.addWidget(self.dwg_pref, 9, 1, 1, 2)
+        grid.addWidget(self.dwg_pref, 10, 1, 1, 2)
 
-        grid.addWidget(QLabel("DXF version for DWG conversion"), 10, 0)
+        grid.addWidget(QLabel("DXF version for DWG conversion"), 11, 0)
         self.dxf_version = QLineEdit(); self.dxf_version.setText("ACAD2013")
-        grid.addWidget(self.dxf_version, 10, 1, 1, 2)
+        grid.addWidget(self.dxf_version, 11, 1, 1, 2)
 
-        # Row 11: Flags
+        # Row 12: Feature options (new)
+        grid.addWidget(QLabel("Options"), 12, 0, Qt.AlignTop)
+        options_wrap = QWidget(); fl = QVBoxLayout(options_wrap); fl.setContentsMargins(0,0,0,0)
         self.chk_overwrite = QCheckBox("Overwrite existing"); self.chk_overwrite.setChecked(False)
         self.chk_load = QCheckBox("Load outputs into project"); self.chk_load.setChecked(True)
-        flags = QWidget(); fl = QHBoxLayout(flags); fl.setContentsMargins(0,0,0,0)
-        fl.addWidget(self.chk_overwrite); fl.addWidget(self.chk_load); fl.addStretch(1)
-        grid.addWidget(flags, 11, 0, 1, 3)
+        self.chk_text_attrs = QCheckBox("Extract TEXT/MTEXT to attributes (annotation points)"); self.chk_text_attrs.setChecked(True)
+        self.chk_block_attrs = QCheckBox("Expand block attributes into fields (BLOCKS layer)"); self.chk_block_attrs.setChecked(True)
+        self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale)"); self.chk_block_transform.setChecked(True)
+        fl.addWidget(self.chk_overwrite); fl.addWidget(self.chk_load)
+        fl.addWidget(self.chk_text_attrs); fl.addWidget(self.chk_block_attrs); fl.addWidget(self.chk_block_transform)
+        grid.addWidget(options_wrap, 12, 1, 1, 2)
 
-        # Row 12: Run
+        # Row 13: Run
         run_bar = QWidget(); hb4 = QHBoxLayout(run_bar); hb4.setContentsMargins(0,0,0,0)
         self.btn_run = QPushButton("Run"); self.btn_run.clicked.connect(self.run_convert)
         hb4.addStretch(1); hb4.addWidget(self.btn_run)
-        grid.addWidget(run_bar, 12, 0, 1, 3)
+        grid.addWidget(run_bar, 13, 0, 1, 3)
 
-        # Row 13: Log/HTML
+        # Row 14: Log/HTML
         self.out_html = QTextBrowser(); self.out_html.setOpenExternalLinks(True)
-        grid.addWidget(self.out_html, 13, 0, 1, 3)
+        grid.addWidget(self.out_html, 14, 0, 1, 3)
 
         self.driver.currentIndexChanged.connect(self.on_driver_changed)
         self.on_driver_changed()
@@ -199,6 +210,7 @@ class CadToGisDialog(QDialog):
             tgt_epsg = int(tgt_epsg_text) if tgt_epsg_text else None
             mode = self.block_mode.currentText()
             merge_tol = float(self.merge_tol.value())
+            spline_tol = float(self.spline_tol.value())
             driver = self.driver.currentText()
             out_path = self.out_edit.text().strip()
             if not out_path:
@@ -218,6 +230,7 @@ class CadToGisDialog(QDialog):
 
             try:
                 self.log("<b>Running conversion ...</b>")
+                # Pass spline tolerance via flat_dist_precise knob if available
                 buckets = precise_convert(
                     [input_for_convert],
                     source_epsg=src_epsg,
@@ -227,9 +240,24 @@ class CadToGisDialog(QDialog):
                     target_layers=target_layers,
                     block_mode=mode,
                     line_merge_tol=merge_tol,
+                    flat_dist_precise=spline_tol,
                     fallback_explode_lines=True,
                     on_progress=lambda s: self.log(s or "")
                 )
+
+                # Augment with TEXT/MTEXT and BLOCK attributes if requested
+                extras = _augment.collect_annotations_and_blocks(
+                    input_for_convert,
+                    src_epsg=src_epsg,
+                    tgt_epsg=tgt_epsg,
+                    include_text=self.chk_text_attrs.isChecked(),
+                    include_blocks=self.chk_block_attrs.isChecked(),
+                    keep_block_transform=self.chk_block_transform.isChecked(),
+                    on_progress=lambda s: self.log(s or ""),
+                )
+                if extras:
+                    buckets.update(extras)
+
                 self.log("<b>Writing outputs ...</b>")
                 written = write_outputs(
                     buckets,
