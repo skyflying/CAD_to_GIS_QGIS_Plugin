@@ -12,7 +12,7 @@ class CadToGisDialog(QDialog):
         super().__init__(iface.mainWindow())
         self.iface = iface
         self.setWindowTitle("CAD to GIS Converter")
-        self.setMinimumWidth(820)
+        self.setMinimumWidth(860)
 
         grid = QGridLayout()
 
@@ -25,17 +25,21 @@ class CadToGisDialog(QDialog):
         hb.addWidget(self.in_edit); hb.addWidget(btn_in); hb.addWidget(btn_scan)
         grid.addWidget(wrap, 0, 1, 1, 2)
 
-        # Row 1: Layers CSV + copy from preview
-        grid.addWidget(QLabel("Layer names (CSV, optional)"), 1, 0)
+        # Row 1: Layers CSV + control buttons
+        grid.addWidget(QLabel("Layer names (CSV, auto-filled from preview)"), 1, 0)
         self.layers_edit = QLineEdit()
-        btn_copy_selected = QPushButton("Copy selected from preview"); btn_copy_selected.clicked.connect(self.copy_selected_layers)
+        btn_select_all = QPushButton("Select All"); btn_select_all.clicked.connect(self.select_all_layers)
+        btn_clear = QPushButton("Clear"); btn_clear.clicked.connect(self.clear_layers_selection)
         wrap2 = QWidget(); hb2 = QHBoxLayout(wrap2); hb2.setContentsMargins(0,0,0,0)
-        hb2.addWidget(self.layers_edit); hb2.addWidget(btn_copy_selected)
+        hb2.addWidget(self.layers_edit); hb2.addWidget(btn_select_all); hb2.addWidget(btn_clear)
         grid.addWidget(wrap2, 1, 1, 1, 2)
 
         # Row 2: Layer preview list
         grid.addWidget(QLabel("Layer Preview"), 2, 0, Qt.AlignTop)
-        self.layer_list = QListWidget(); self.layer_list.setSelectionMode(self.layer_list.MultiSelection)
+        self.layer_list = QListWidget()
+        self.layer_list.setSelectionMode(self.layer_list.MultiSelection)
+        self.layer_list.itemSelectionChanged.connect(self.sync_layers_csv_from_preview)
+        self.layer_list.itemChanged.connect(self.sync_layers_csv_from_preview)
         grid.addWidget(self.layer_list, 2, 1, 1, 2)
 
         # Row 3: Source EPSG
@@ -58,7 +62,7 @@ class CadToGisDialog(QDialog):
         self.merge_tol = QDoubleSpinBox(); self.merge_tol.setDecimals(6); self.merge_tol.setRange(0.0, 1e9); self.merge_tol.setValue(0.0)
         grid.addWidget(self.merge_tol, 6, 1, 1, 2)
 
-        # Row 7: Spline tolerance (for SPLINE approximation)
+        # Row 7: Spline tolerance
         grid.addWidget(QLabel("Spline tolerance"), 7, 0)
         self.spline_tol = QDoubleSpinBox(); self.spline_tol.setDecimals(6); self.spline_tol.setRange(0.0, 1e6); self.spline_tol.setValue(0.2)
         grid.addWidget(self.spline_tol, 7, 1, 1, 2)
@@ -86,14 +90,14 @@ class CadToGisDialog(QDialog):
         self.dxf_version = QLineEdit(); self.dxf_version.setText("ACAD2013")
         grid.addWidget(self.dxf_version, 11, 1, 1, 2)
 
-        # Row 12: Feature options (new)
+        # Row 12: Options
         grid.addWidget(QLabel("Options"), 12, 0, Qt.AlignTop)
         options_wrap = QWidget(); fl = QVBoxLayout(options_wrap); fl.setContentsMargins(0,0,0,0)
         self.chk_overwrite = QCheckBox("Overwrite existing"); self.chk_overwrite.setChecked(False)
         self.chk_load = QCheckBox("Load outputs into project"); self.chk_load.setChecked(True)
-        self.chk_text_attrs = QCheckBox("Extract TEXT/MTEXT to attributes (annotation points)"); self.chk_text_attrs.setChecked(True)
-        self.chk_block_attrs = QCheckBox("Expand block attributes into fields (BLOCKS layer)"); self.chk_block_attrs.setChecked(True)
-        self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale)"); self.chk_block_transform.setChecked(True)
+        self.chk_text_attrs = QCheckBox("Extract TEXT/MTEXT to attributes (annotation points) — only selected layers"); self.chk_text_attrs.setChecked(True)
+        self.chk_block_attrs = QCheckBox("Expand block attributes into fields (BLOCKS layer) — only selected layers"); self.chk_block_attrs.setChecked(True)
+        self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale) — also attach to outputs"); self.chk_block_transform.setChecked(True)
         fl.addWidget(self.chk_overwrite); fl.addWidget(self.chk_load)
         fl.addWidget(self.chk_text_attrs); fl.addWidget(self.chk_block_attrs); fl.addWidget(self.chk_block_transform)
         grid.addWidget(options_wrap, 12, 1, 1, 2)
@@ -138,6 +142,32 @@ class CadToGisDialog(QDialog):
         if msg:
             self.out_html.append(msg.replace("\n","<br>"))
 
+    def sync_layers_csv_from_preview(self):
+        names = set()
+        for i in range(self.layer_list.count()):
+            it = self.layer_list.item(i)
+            if it.checkState() == Qt.Checked or it.isSelected():
+                names.add(it.text())
+        self.layers_edit.setText(", ".join(sorted(names)))
+
+    def select_all_layers(self):
+        self.layer_list.blockSignals(True)
+        for i in range(self.layer_list.count()):
+            it = self.layer_list.item(i)
+            it.setSelected(True)
+            it.setCheckState(Qt.Checked)
+        self.layer_list.blockSignals(False)
+        self.sync_layers_csv_from_preview()
+
+    def clear_layers_selection(self):
+        self.layer_list.blockSignals(True)
+        for i in range(self.layer_list.count()):
+            it = self.layer_list.item(i)
+            it.setSelected(False)
+            it.setCheckState(Qt.Unchecked)
+        self.layer_list.blockSignals(False)
+        self.sync_layers_csv_from_preview()
+
     def scan_layers(self):
         self.layer_list.clear()
         cad_path = self.in_edit.text().strip()
@@ -179,18 +209,6 @@ class CadToGisDialog(QDialog):
             if temp_dir and os.path.isdir(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def copy_selected_layers(self):
-        selected = set([it.text() for it in self.layer_list.selectedItems()])
-        for i in range(self.layer_list.count()):
-            it = self.layer_list.item(i)
-            if it.checkState() == Qt.Checked:
-                selected.add(it.text())
-        if not selected:
-            selected = [self.layer_list.item(i).text() for i in range(self.layer_list.count())]
-        else:
-            selected = sorted(selected)
-        self.layers_edit.setText(", ".join(selected))
-
     def run_convert(self):
         try:
             self.btn_run.setEnabled(False)
@@ -204,7 +222,7 @@ class CadToGisDialog(QDialog):
                 raise RuntimeError(f"File not found: {cad_path}")
 
             layers_csv = self.layers_edit.text().strip()
-            target_layers = [s.strip() for s in layers_csv.split(',') if s.strip()] if layers_csv else None
+            target_layers = [s.strip() for s in layers_csv.split(',') if s.strip()] if layers_csv else []
             src_epsg = int(self.src_epsg.value())
             tgt_epsg_text = self.tgt_epsg.text().strip()
             tgt_epsg = int(tgt_epsg_text) if tgt_epsg_text else None
@@ -230,14 +248,14 @@ class CadToGisDialog(QDialog):
 
             try:
                 self.log("<b>Running conversion ...</b>")
-                # Pass spline tolerance via flat_dist_precise knob if available
+                # NOTE: precise_convert still receives 'target_layers' (for core geometry).
                 buckets = precise_convert(
                     [input_for_convert],
                     source_epsg=src_epsg,
                     target_epsg=tgt_epsg,
                     include_3d=False,
                     bbox_wgs84=None,
-                    target_layers=target_layers,
+                    target_layers=(target_layers if target_layers else None),
                     block_mode=mode,
                     line_merge_tol=merge_tol,
                     flat_dist_precise=spline_tol,
@@ -245,7 +263,7 @@ class CadToGisDialog(QDialog):
                     on_progress=lambda s: self.log(s or "")
                 )
 
-                # Augment with TEXT/MTEXT and BLOCK attributes if requested
+                # Augment: TEXT/MTEXT + BLOCKS only for selected layers
                 extras = _augment.collect_annotations_and_blocks(
                     input_for_convert,
                     src_epsg=src_epsg,
@@ -253,10 +271,17 @@ class CadToGisDialog(QDialog):
                     include_text=self.chk_text_attrs.isChecked(),
                     include_blocks=self.chk_block_attrs.isChecked(),
                     keep_block_transform=self.chk_block_transform.isChecked(),
+                    target_layers=target_layers,  # <-- filter
                     on_progress=lambda s: self.log(s or ""),
                 )
                 if extras:
                     buckets.update(extras)
+
+                # Attach block transforms using only selected BLOCK layers
+                if self.chk_block_transform.isChecked():
+                    blk = extras.get(("BLOCKS","POINT")) if extras else None
+                    if blk is not None and len(blk) > 0:
+                        _augment.attach_block_transform_to_buckets(buckets, blk, on_progress=lambda s: self.log(s or ""))
 
                 self.log("<b>Writing outputs ...</b>")
                 written = write_outputs(
