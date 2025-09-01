@@ -2,22 +2,25 @@
 name=CAD To GIS Convert
 qgisMinimumVersion=3.22
 qgisMaximumVersion=3.99
-version=1.1.0
+version=1.2.0
 author=Mingyi Hsu
 email=skyflying07@gmail.com
-about=This plugin wraps your conversion engine into a QGIS Plugin tool. Supports DWG input via ODA File Converter or LibreDWG.
+about=This plugin wraps your CAD-to-GIS conversion engine into a QGIS Plugin. It supports DXF/DWG input (via ODA File Converter or LibreDWG), block-preserving merge, reprojection, and export to GPKG or Shapefile with auto-load.
 homepage=https://github.com/skyflying
 repository=https://github.com/skyflying/CAD_to_GIS_QGIS_Plugin
 tracker=https://github.com/skyflying/CAD_to_GIS_QGIS_Plugin/issues
 category=Analysis
-description=CAD to GIS Converter plugin. Converts DXF/DWG into GIS layers grouped by CAD layers. Supports block-preserving merge, reprojection, export to GPKG or Shapefile, and auto-load.
+description=CAD to GIS Converter plugin. Converts DXF/DWG into GIS layers grouped by CAD layers. Supports block-preserving merge (per-instance), reprojection, PRJ generation, export to GPKG or Shapefile, auto-load into QGIS, and optional annotation extraction.
 hasProcessingProvider=yes
 icon=icons/icon.ico
 experimental=False
 deprecated=False
-tags=DWG,DXF,SHP,GPKG
+tags=DWG,DXF,SHP,GPKG,Block
 license=GPL-3.0-or-later
 changelog=
+    1.2.0 - 2025-09-01
+        * Fixed the bugs
+        * Supported the ogr and ezdxf library
     1.1.0 - 2025-08-22
         * Extract TEXT/MTEXT to attributes
         * Keep block attributes

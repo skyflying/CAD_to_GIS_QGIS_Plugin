@@ -1,3 +1,4 @@
+
 import os, shutil, traceback
 from qgis.PyQt.QtWidgets import (QDialog, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QWidget, QTextBrowser, QGridLayout, QListWidget, QListWidgetItem)
@@ -7,10 +8,90 @@ from .services.dwg_support import dwg_to_temp_dxf_auto
 from .services import deps as _deps
 from .services import augment as _augment
 
+# OGR fallback imports
+try:
+    from osgeo import ogr, gdal, osr
+    try:
+        ogr.UseExceptions()
+    except Exception:
+        pass
+    try:
+        gdal.SetConfigOption("DXF_INLINE_BLOCKS", "YES")
+        gdal.SetConfigOption("DXF_CLOSED_LINE_AS_POLYGON", "TRUE")
+    except Exception:
+        pass
+except Exception:
+    ogr = None
+    gdal = None
+    osr = None
+
+def _ogr_list_layers(dxf_path: str):
+    names = []
+    if ogr is None or not os.path.exists(dxf_path):
+        return names
+    ds = ogr.Open(dxf_path, 0)
+    if ds is None:
+        return names
+    lyr = ds.GetLayerByName("entities") or (ds.GetLayer(0) if ds.GetLayerCount() else None)
+    if lyr is None:
+        ds = None; return names
+    try:
+        res = ds.ExecuteSQL("SELECT DISTINCT Layer FROM entities")
+        if res:
+            for f in res:
+                v = f.GetField("Layer")
+                if v:
+                    names.append(str(v))
+            ds.ReleaseResultSet(res)
+    except Exception:
+        pass
+    if not names:
+        seen = set()
+        lyr.ResetReading()
+        for f in lyr:
+            try:
+                v = f.GetField("Layer")
+                if v and v not in seen:
+                    seen.add(v); names.append(str(v))
+            except Exception:
+                pass
+    ds = None
+    return sorted(set(names))
+
 class CadToGisDialog(QDialog):
-    def __init__(self, iface):
-        super().__init__(iface.mainWindow())
-        self.iface = iface
+    def _parse_epsg(self, widget, default=None):
+        # 相容 QSpinBox / QLineEdit
+        try:
+            return int(widget.value())  # QSpinBox
+        except Exception:
+            pass
+        try:
+            txt = widget.text().strip()
+            return int(txt) if txt else default
+        except Exception:
+            return default
+        
+    def __init__(self, parent_or_iface):
+        # Accept either QgisInterface or a QWidget (e.g., QMainWindow)
+        try:
+            from qgis.utils import iface as _global_iface
+        except Exception:
+            _global_iface = None
+        parent = None
+        self.iface = None
+        # If we got a QgisInterface-like object
+        if hasattr(parent_or_iface, 'mainWindow') and callable(getattr(parent_or_iface, 'mainWindow')):
+            self.iface = parent_or_iface
+            try:
+                parent = parent_or_iface.mainWindow()
+            except Exception:
+                parent = None
+        else:
+            # Assume it's already a QWidget parent (e.g., QMainWindow)
+            parent = parent_or_iface
+            self.iface = _global_iface
+        super().__init__(parent)
+
         self.setWindowTitle("CAD to GIS Converter")
         self.setMinimumWidth(860)
 
@@ -44,7 +125,7 @@ class CadToGisDialog(QDialog):
 
         # Row 3: Source EPSG
         grid.addWidget(QLabel("Source EPSG"), 3, 0)
-        self.src_epsg = QSpinBox(); self.src_epsg.setMaximum(999999); self.src_epsg.setValue(3826)
+        self.src_epsg = QLineEdit()
         grid.addWidget(self.src_epsg, 3, 1, 1, 2)
 
         # Row 4: Target EPSG
@@ -97,7 +178,7 @@ class CadToGisDialog(QDialog):
         self.chk_load = QCheckBox("Load outputs into project"); self.chk_load.setChecked(True)
         self.chk_text_attrs = QCheckBox("Extract TEXT/MTEXT to attributes (annotation points) — only selected layers"); self.chk_text_attrs.setChecked(True)
         self.chk_block_attrs = QCheckBox("Expand block attributes into fields (BLOCKS layer) — only selected layers"); self.chk_block_attrs.setChecked(True)
-        self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale) — also attach to outputs"); self.chk_block_transform.setChecked(True)
+        self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale) — only selected layers"); self.chk_block_transform.setChecked(True)
         fl.addWidget(self.chk_overwrite); fl.addWidget(self.chk_load)
         fl.addWidget(self.chk_text_attrs); fl.addWidget(self.chk_block_attrs); fl.addWidget(self.chk_block_transform)
         grid.addWidget(options_wrap, 12, 1, 1, 2)
@@ -174,12 +255,8 @@ class CadToGisDialog(QDialog):
         if not cad_path or not os.path.isfile(cad_path):
             self.log("<span style='color:#b00'>Please pick a valid DXF/DWG first.</span>")
             return
-        try:
-            from .services import deps as _deps
-            _deps.ensure_ezdxf_safe(feedback=SimpleFeedback(self))
-        except Exception as e:
-            self.log(f"<span style='color:#b00'>Failed to prepare ezdxf: {e}</span>")
-            return
+        # Try to prepare ezdxf; do not abort if unavailable
+        ez_ok = _deps.ensure_ezdxf_safe(feedback=SimpleFeedback(self))
 
         temp_dir = None
         try:
@@ -190,10 +267,19 @@ class CadToGisDialog(QDialog):
                                                     dxf_version=(self.dxf_version.text().strip() or "ACAD2013"))
                 temp_dir = os.path.dirname(src_for_scan)
 
-            import ezdxf
-            self.log("<b>Reading layers ...</b>")
-            doc = ezdxf.readfile(src_for_scan)
-            names = sorted([str(t.dxf.name) for t in doc.layers])
+            names = []
+            if ez_ok:
+                try:
+                    import ezdxf
+                    self.log("<b>Reading layers via ezdxf ...</b>")
+                    doc = ezdxf.readfile(src_for_scan)
+                    names = sorted([str(t.dxf.name) for t in doc.layers])
+                except Exception as e:
+                    self.log(f"<i>ezdxf layer scan failed:</i> {e}")
+            if not names:
+                self.log("Trying OGR fallback ...")
+                names = _ogr_list_layers(src_for_scan)
+
             if not names:
                 self.log("<i>No layers found.</i>")
             else:
@@ -203,17 +289,19 @@ class CadToGisDialog(QDialog):
                 self.log(f"Found {len(names)} layer(s).")
         except Exception as e:
             tb = traceback.format_exc()
-            self.log(f"""<div style='color:#b00'><b>Layer scan failed:</b> {e}</div>""")
-            self.log(f"""<pre>{tb}</pre>""")
+            self.log(f"<div style='color:#b00'><b>Layer scan failed:</b> {e}</div>")
+            self.log(f"<pre>{tb}</pre>")
         finally:
             if temp_dir and os.path.isdir(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
     def run_convert(self):
+        
+ 
         try:
             self.btn_run.setEnabled(False)
             self.log("<b>Checking dependency: ezdxf</b>")
-            _deps.ensure_ezdxf_safe(feedback=SimpleFeedback(self))
+            ez_ok = _deps.ensure_ezdxf_safe(feedback=SimpleFeedback(self))
 
             from .services.conversion_service import precise_convert, write_outputs
 
@@ -223,9 +311,8 @@ class CadToGisDialog(QDialog):
 
             layers_csv = self.layers_edit.text().strip()
             target_layers = [s.strip() for s in layers_csv.split(',') if s.strip()] if layers_csv else []
-            src_epsg = int(self.src_epsg.value())
-            tgt_epsg_text = self.tgt_epsg.text().strip()
-            tgt_epsg = int(tgt_epsg_text) if tgt_epsg_text else None
+            src_epsg = self._parse_epsg(self.src_epsg)
+            tgt_epsg = self._parse_epsg(self.tgt_epsg)
             mode = self.block_mode.currentText()
             merge_tol = float(self.merge_tol.value())
             spline_tol = float(self.spline_tol.value())
@@ -248,7 +335,6 @@ class CadToGisDialog(QDialog):
 
             try:
                 self.log("<b>Running conversion ...</b>")
-                # NOTE: precise_convert still receives 'target_layers' (for core geometry).
                 buckets = precise_convert(
                     [input_for_convert],
                     source_epsg=src_epsg,
@@ -263,25 +349,23 @@ class CadToGisDialog(QDialog):
                     on_progress=lambda s: self.log(s or "")
                 )
 
-                # Augment: TEXT/MTEXT + BLOCKS only for selected layers
-                extras = _augment.collect_annotations_and_blocks(
-                    input_for_convert,
-                    src_epsg=src_epsg,
-                    tgt_epsg=tgt_epsg,
-                    include_text=self.chk_text_attrs.isChecked(),
-                    include_blocks=self.chk_block_attrs.isChecked(),
-                    keep_block_transform=self.chk_block_transform.isChecked(),
-                    target_layers=target_layers,  # <-- filter
-                    on_progress=lambda s: self.log(s or ""),
-                )
-                if extras:
-                    buckets.update(extras)
-
-                # Attach block transforms using only selected BLOCK layers
-                if self.chk_block_transform.isChecked():
-                    blk = extras.get(("BLOCKS","POINT")) if extras else None
-                    if blk is not None and len(blk) > 0:
-                        _augment.attach_block_transform_to_buckets(buckets, blk, on_progress=lambda s: self.log(s or ""))
+                # Optional augment (best with ezdxf; OGR fallback may skip)
+                try:
+                    if _augment and (self.chk_text_attrs.isChecked() or self.chk_block_attrs.isChecked()):
+                        extras = _augment.collect_annotations_and_blocks(
+                            input_for_convert,
+                            src_epsg=src_epsg,
+                            tgt_epsg=tgt_epsg,
+                            include_text=self.chk_text_attrs.isChecked(),
+                            include_blocks=self.chk_block_attrs.isChecked(),
+                            keep_block_transform=self.chk_block_transform.isChecked(),
+                            target_layers=target_layers,
+                            on_progress=lambda s: self.log(s or ""),
+                        )
+                        if extras and isinstance(buckets, dict):
+                            buckets.update(extras)
+                except Exception as e_aug:
+                    self.log(f"<i>augment skipped:</i> {e_aug}")
 
                 self.log("<b>Writing outputs ...</b>")
                 written = write_outputs(
@@ -295,12 +379,13 @@ class CadToGisDialog(QDialog):
                 if temp_dir and os.path.isdir(temp_dir):
                     shutil.rmtree(temp_dir, ignore_errors=True)
 
+            # Auto load
             if do_load:
                 for w in (written or []):
                     path = w.get("path"); name = w.get("layer")
                     uri = path if driver == "ESRI Shapefile" else f"{path}|layername={name}"
                     v = QgsVectorLayer(uri, name, "ogr")
-                    if v.isValid():
+                    if v and v.isValid():
                         QgsProject.instance().addMapLayer(v)
 
             html = "<h3>CAD to GIS Converter</h3><ul>" + "\n".join(
@@ -310,7 +395,7 @@ class CadToGisDialog(QDialog):
             self.log("<b>Done.</b>")
         except Exception as e:
             tb = traceback.format_exc()
-            self.out_html.append(f"""<div style='color:#b00'><b>ERROR:</b> {e}</div><pre>{tb}</pre>""")
+            self.out_html.append(f"<div style='color:#b00'><b>ERROR:</b> {e}</div><pre>{tb}</pre>")
         finally:
             self.btn_run.setEnabled(True)
 
