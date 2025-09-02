@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 
 import os, shutil, traceback
 from qgis.PyQt.QtWidgets import (QDialog, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QWidget, QTextBrowser, QGridLayout, QListWidget, QListWidgetItem)
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QCoreApplication
 from qgis.core import QgsVectorLayer, QgsProject
 from .services.dwg_support import dwg_to_temp_dxf_auto
 from .services import deps as _deps
@@ -222,6 +223,13 @@ class CadToGisDialog(QDialog):
     def log(self, msg):
         if msg:
             self.out_html.append(msg.replace("\n","<br>"))
+            try:
+            # 滾到最底，確保新訊息可見
+                self.out_html.moveCursor(self.out_html.textCursor().End)
+            except Exception:
+                pass
+        # ★ 關鍵：立即處理事件，讓 UI 不必等任務結束才重畫
+            QCoreApplication.processEvents()
 
     def sync_layers_csv_from_preview(self):
         names = set()
@@ -336,16 +344,15 @@ class CadToGisDialog(QDialog):
             try:
                 self.log("<b>Running conversion ...</b>")
                 buckets = precise_convert(
-                    [input_for_convert],
+                    src_path=input_for_convert,                    # ← 傳字串，不要包 list
                     source_epsg=src_epsg,
                     target_epsg=tgt_epsg,
                     include_3d=False,
                     bbox_wgs84=None,
                     target_layers=(target_layers if target_layers else None),
                     block_mode=mode,
-                    line_merge_tol=merge_tol,
+                    merge_tolerance=merge_tol,                     # ← 正確參數名
                     flat_dist_precise=spline_tol,
-                    fallback_explode_lines=True,
                     on_progress=lambda s: self.log(s or "")
                 )
 
