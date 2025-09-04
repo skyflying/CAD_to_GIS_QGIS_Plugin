@@ -18,9 +18,11 @@ deprecated=False
 tags=DWG,DXF,SHP,GPKG,Block
 license=GPL-3.0-or-later
 changelog=
+    1.2.1 - 2025-09-02
+        * Reduce iterative processing and optimize execution performance
     1.2.0 - 2025-09-01
-        * Fixed the bugs
-        * Supported the ogr and ezdxf library
+        * Fix the bugs
+        * Support the ogr and ezdxf library
     1.1.0 - 2025-08-22
         * Extract TEXT/MTEXT to attributes
         * Keep block attributes
