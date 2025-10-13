@@ -24,6 +24,38 @@ def _sanitize_filename(name: str) -> str:
     return s[:100]
 
 
+
+def _sanitize_fields_for_driver(df, driver: str):
+
+    try:
+        import geopandas as gpd  
+    except Exception:
+        pass
+
+    drv = (driver or "").upper()
+    geom_col_name = getattr(df, "geometry", None).name if hasattr(df, "geometry") and df.geometry is not None else "geometry"
+
+    rename_map = {}
+    if drv == "GPKG":
+        for col in list(df.columns):
+            if col == geom_col_name:
+                continue  # this is the active geometry column
+            if col.lower() == "geom":  # conflict with GPKG geometry column name used by Fiona
+                new_name = "geom_type"
+                i = 1
+                # ensure uniqueness
+                while new_name in df.columns or new_name == geom_col_name:
+                    new_name = f"geom_type_{i}"
+                    i += 1
+                rename_map[col] = new_name
+
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
+
+
+
+
 def _coerce_paths(src_path, dxf_paths_kw=None) -> List[str]:
     """Normalize incoming path(s): string, list, or stringified list → list[str]."""
     import ast
@@ -1261,6 +1293,7 @@ def write_outputs(
                 gdf = _normalize_bucket_geoms((layer, geom), gdf)
                 if gdf.empty:
                     say(f"[write:skip] {layer}/{geom} empty after normalize"); continue
+                gdf = _sanitize_fields_for_driver(gdf, "GPKG")
                 gdf.to_file(gpkg, layer=lname, driver="GPKG")
                 written.append({"path": gpkg, "layer": lname, "count": int(len(gdf))})
                 say(f"[write] GPKG: {lname} ({len(gdf)}) → {gpkg}")
