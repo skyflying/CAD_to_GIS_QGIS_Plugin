@@ -59,10 +59,25 @@ This plugin adds a menu entry in QGIS that opens a clean dialog for CAD→GIS co
 
 ---
 
+## 📐 DWG support (no ODA required)
+
+DWG files are opened through an automatic fallback chain:
+
+| Order | Reader | Install | Notes |
+|---|---|---|---|
+| 1 | **ODA File Converter** | user installs it ([download](https://www.opendesign.com/guestfiles/oda_file_converter)) | Best quality. ODA states non-members may use it for **non-commercial purposes only** — check the licence for company use. |
+| 2 | **LibreDWG** (`dwg2dxf`) | one-click **Download LibreDWG** (Windows, ~12 MB, GPL-3.0) or your package manager | Stored in `%APPDATA%\CAD_to_GIS\libredwg`. Newer entity types may be less complete than ODA. |
+| 3 | **GDAL CAD driver** | built into GDAL/QGIS | **DWG R2000 (AC1015) only**; blocks are not merged, hatches/splines may be missing. |
+| — | none | — | A dialog explains the options (download LibreDWG / set ODA path / save as DXF). |
+
+The UI shows which reader is active (**DWG reader** status) and offers *Set ODA path…*, *Download LibreDWG*, *ODA download page* and *Re-detect*.
+Tool paths are remembered in `%APPDATA%\CAD_to_GIS\dwg_tools.json` (Linux/macOS: `~/.config/CAD_to_GIS/`), shared by the standalone app and the QGIS plugin.
+Behind a proxy/firewall, download `libredwg-<ver>-win64.zip` manually from <https://github.com/LibreDWG/libredwg/releases>, unzip it into `%APPDATA%\CAD_to_GIS\libredwg\` and press *Re-detect*.
+
 ## 🔍 How It Works
 
 - **DXF** is read directly with `ezdxf` (if available).
-- **DWG** is converted to a temporary DXF via `dwg_support.py`, then processed as DXF.
+- **DWG** is converted to a temporary DXF via `dwg_support.py` (ODA or LibreDWG) and processed as DXF; without either, DWG R2000 is read directly with GDAL's CAD driver.
 - `conversion_service.py` handles parsing, per-instance block handling, optional merging, reprojection, attribute enrichment, and writing outputs.
 - The plugin **does not** use QGIS Processing; it calls your services directly to avoid `createInstance()` issues.
 

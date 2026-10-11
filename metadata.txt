@@ -2,7 +2,7 @@
 name=CAD To GIS Convert
 qgisMinimumVersion=3.22
 qgisMaximumVersion=3.99
-version=1.3.1
+version=1.4.0
 author=Mingyi Hsu
 email=skyflying07@gmail.com
 about=This plugin wraps your CAD-to-GIS conversion engine into a QGIS Plugin. It supports DXF/DWG input (via ODA File Converter or LibreDWG), block-preserving merge, reprojection, and export to GPKG or Shapefile with auto-load.
@@ -18,6 +18,11 @@ deprecated=False
 tags=DWG,DXF,SHP,GPKG,Block
 license=GPL-3.0-or-later
 changelog=
+    1.4.0 - 2026-10-11
+        * DWG works without ODA: ODA -> LibreDWG -> GDAL CAD driver (DWG R2000) fallback chain
+        * DWG reader status + "Set ODA path", "Download LibreDWG" (Windows), "ODA download page", "Re-detect"
+        * Guidance dialog when no reader can open the DWG
+        * Fixed ODA File Converter call (wrong argument order; converted the whole input folder)
     1.3.1 - 2026-10-11
         * Target EPSG / bbox now applied in the ezdxf pipeline; OGR pipeline reprojects to EPSG:4326 too
         * Line-merge tolerance parameter was ignored (wrong keyword) - fixed

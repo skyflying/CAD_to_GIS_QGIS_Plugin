@@ -3,11 +3,11 @@
 import os, shutil, traceback, html
 from qgis.PyQt.QtWidgets import (QDialog, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QWidget, QTextBrowser, QGridLayout, QListWidget, QListWidgetItem,
-    QAbstractItemView)
+    QAbstractItemView, QMessageBox, QProgressDialog)
 from qgis.PyQt.QtGui import QTextCursor
 from qgis.PyQt.QtCore import Qt, QCoreApplication
 from qgis.core import QgsVectorLayer, QgsProject
-from .services.dwg_support import dwg_to_temp_dxf_auto
+from .services import dwg_support as dwg
 from .services import deps as _deps
 from .services import augment as _augment
 
@@ -160,9 +160,23 @@ class CadToGisDialog(QDialog):
         grid.addWidget(wrap3, 9, 1, 1, 2)
 
         # Row 10: DWG options
-        grid.addWidget(QLabel("DWG converter preference"), 10, 0)
+        grid.addWidget(QLabel("DWG converter preference"), 10, 0, Qt.AlignTop)
         self.dwg_pref = QComboBox(); self.dwg_pref.addItems(["auto","oda","libredwg"])
-        grid.addWidget(self.dwg_pref, 10, 1, 1, 2)
+        self.dwg_pref.setToolTip("auto: ODA → LibreDWG → GDAL CAD driver (DWG R2000 only)")
+        # DWG reader status + tools under the combo
+        self.lbl_dwg = QLabel()
+        self.btn_set_oda = QPushButton("Set ODA path…"); self.btn_set_oda.clicked.connect(self.on_set_oda)
+        self.btn_get_libre = QPushButton("Download LibreDWG"); self.btn_get_libre.clicked.connect(self.on_download_libredwg)
+        self.btn_oda_page = QPushButton("ODA download page")
+        self.btn_oda_page.clicked.connect(lambda: dwg.open_url(dwg.ODA_DOWNLOAD_URL))
+        self.btn_redetect = QPushButton("Re-detect"); self.btn_redetect.clicked.connect(self.refresh_dwg_status)
+        dwg_wrap = QWidget(); dvb = QVBoxLayout(dwg_wrap); dvb.setContentsMargins(0,0,0,0)
+        dvb.addWidget(self.dwg_pref)
+        dh = QHBoxLayout(); dh.addWidget(self.lbl_dwg, 1)
+        for b in (self.btn_set_oda, self.btn_get_libre, self.btn_oda_page, self.btn_redetect):
+            dh.addWidget(b)
+        dvb.addLayout(dh)
+        grid.addWidget(dwg_wrap, 10, 1, 1, 2)
 
         grid.addWidget(QLabel("DXF version for DWG conversion"), 11, 0)
         self.dxf_version = QLineEdit(); self.dxf_version.setText("ACAD2013")
@@ -192,8 +206,103 @@ class CadToGisDialog(QDialog):
 
         self.driver.currentIndexChanged.connect(self.on_driver_changed)
         self.on_driver_changed()
+        self.refresh_dwg_status()
 
         lay = QVBoxLayout(self); lay.addLayout(grid)
+
+    # ---------------- DWG tools ----------------
+    def refresh_dwg_status(self):
+        st = dwg.detect_status()
+        self.lbl_dwg.setText(f"DWG reader: {st['summary']}")
+        self.lbl_dwg.setToolTip("\n".join([
+            f"ODA: {st['oda'] or '-'}",
+            f"LibreDWG: {st['libredwg'] or '-'}",
+            f"GDAL CAD driver (DWG R2000 only): {'yes' if st['gdal_cad'] else 'no'}",
+        ]))
+        self.btn_get_libre.setEnabled(dwg.libredwg_download_supported())
+        return st
+
+    def on_set_oda(self):
+        filt = "ODAFileConverter (ODAFileConverter*.exe)" if os.name == "nt" else "ODAFileConverter (ODAFileConverter*)"
+        p, _ = QFileDialog.getOpenFileName(self, "Locate ODAFileConverter", "", filt)
+        if p:
+            dwg.set_oda_path(p)
+            self.refresh_dwg_status()
+            self.log(f"ODA path set: {html.escape(p)}")
+        return bool(p)
+
+    def on_download_libredwg(self):
+        """Download LibreDWG (Windows) after confirmation; returns True on success."""
+        if not dwg.libredwg_download_supported():
+            QMessageBox.information(self, "LibreDWG",
+                                    "Automatic download is Windows-only. Install LibreDWG (dwg2dxf) "
+                                    "with your package manager, then press Re-detect.")
+            return False
+        ok = QMessageBox.question(
+            self, "Download LibreDWG",
+            "Download LibreDWG (GPL-3.0, ~12 MB) from github.com/LibreDWG/libredwg/releases into:\n"
+            f"{dwg.config_dir()}\n\nContinue?")
+        if ok != QMessageBox.Yes:
+            return False
+        dlg = QProgressDialog("Downloading LibreDWG…", None, 0, 100, self)
+        dlg.setWindowTitle("LibreDWG"); dlg.setMinimumDuration(0); dlg.setValue(0)
+
+        def pct(v):
+            dlg.setValue(v); QCoreApplication.processEvents()
+        try:
+            exe = dwg.download_libredwg(on_progress=self._plain_log, on_percent=pct)
+            self.log(f"<b>LibreDWG ready:</b> {html.escape(exe)}")
+            return True
+        except Exception as ex:
+            self.log(f"<div style='color:#b00'><b>LibreDWG download failed:</b> {html.escape(str(ex))}</div>"
+                     f"Behind a proxy/firewall: download libredwg-&lt;ver&gt;-win64.zip from "
+                     f"<a href='{dwg.LIBREDWG_RELEASES_URL}'>{dwg.LIBREDWG_RELEASES_URL}</a>, unzip it into "
+                     f"{html.escape(os.path.join(dwg.config_dir(), 'libredwg'))} and press Re-detect.")
+            return False
+        finally:
+            dlg.close()
+            self.refresh_dwg_status()
+
+    def _resolve_cad_input(self, cad_path):
+        """Return (path_for_engine, temp_dir_or_None) or (None, None) if the user cancelled.
+
+        DXF -> unchanged.  DWG -> ODA/LibreDWG temp DXF, else GDAL CAD (R2000),
+        else a guidance dialog (download LibreDWG / set ODA path / ODA page) and one retry.
+        """
+        if not cad_path.lower().endswith(".dwg"):
+            return cad_path, None
+        for attempt in (1, 2):
+            try:
+                kind, p = dwg.open_dwg(cad_path, prefer=self.dwg_pref.currentText(),
+                                       dxf_version=(self.dxf_version.text().strip() or "ACAD2013"),
+                                       on_progress=self._plain_log)
+                if kind == "dxf":
+                    return p, os.path.dirname(p)
+                self.log("<span style='color:#b60'>No ODA / LibreDWG: reading DWG R2000 directly with GDAL. "
+                         "Blocks are not merged; hatches, splines and some entities may be missing.</span>")
+                return p, None
+            except dwg.DwgUnavailableError as ex:
+                if attempt == 2:
+                    raise RuntimeError(ex.guidance)
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Warning)
+                box.setWindowTitle("Cannot read DWG")
+                box.setText(ex.guidance)
+                b_lib = box.addButton("Download LibreDWG", QMessageBox.AcceptRole) if dwg.libredwg_download_supported() else None
+                b_oda = box.addButton("Set ODA path…", QMessageBox.ActionRole)
+                b_page = box.addButton("ODA download page", QMessageBox.ActionRole)
+                box.addButton(QMessageBox.Cancel)
+                box.exec()
+                clicked = box.clickedButton()
+                if b_lib is not None and clicked is b_lib and self.on_download_libredwg():
+                    continue
+                if clicked is b_oda and self.on_set_oda():
+                    continue
+                if clicked is b_page:
+                    dwg.open_url(dwg.ODA_DOWNLOAD_URL)
+                self.log("<i>DWG reading cancelled.</i>")
+                return None, None
+        return None, None
 
     def browse_input(self):
         p, _ = QFileDialog.getOpenFileName(self, "Select CAD file", "", "CAD (*.dxf *.dwg);;DXF (*.dxf);;DWG (*.dwg)")
@@ -268,15 +377,14 @@ class CadToGisDialog(QDialog):
 
         temp_dir = None
         try:
-            src_for_scan = cad_path
-            if cad_path.lower().endswith(".dwg"):
-                self.log("Converting DWG → temporary DXF for layer scan ...")
-                src_for_scan = dwg_to_temp_dxf_auto(cad_path, prefer=self.dwg_pref.currentText(),
-                                                    dxf_version=(self.dxf_version.text().strip() or "ACAD2013"))
-                temp_dir = os.path.dirname(src_for_scan)
+            src_for_scan, temp_dir = self._resolve_cad_input(cad_path)
+            if src_for_scan is None:
+                return
 
             names = []
-            if ez_ok:
+            if src_for_scan.lower().endswith(".dwg"):      # GDAL CAD driver (R2000)
+                names = dwg.gdal_cad_layers(src_for_scan)
+            elif ez_ok:
                 try:
                     import ezdxf
                     self.log("<b>Reading layers via ezdxf ...</b>")
@@ -284,7 +392,7 @@ class CadToGisDialog(QDialog):
                     names = sorted([str(t.dxf.name) for t in doc.layers])
                 except Exception as e:
                     self.log(f"<i>ezdxf layer scan failed:</i> {e}")
-            if not names:
+            if not names and not src_for_scan.lower().endswith(".dwg"):
                 self.log("Trying OGR fallback ...")
                 names = _ogr_list_layers(src_for_scan)
 
@@ -337,13 +445,9 @@ class CadToGisDialog(QDialog):
             overwrite = self.chk_overwrite.isChecked()
             do_load = self.chk_load.isChecked()
 
-            input_for_convert = cad_path
-            temp_dir = None
-            if cad_path.lower().endswith(".dwg"):
-                self.log("Converting DWG → temporary DXF ...")
-                temp_dxf = dwg_to_temp_dxf_auto(cad_path, prefer=dwg_pref, dxf_version=dxf_version)
-                input_for_convert = temp_dxf
-                temp_dir = os.path.dirname(temp_dxf)
+            input_for_convert, temp_dir = self._resolve_cad_input(cad_path)
+            if input_for_convert is None:
+                return
 
             try:
                 self.log("<b>Running conversion ...</b>")
@@ -360,9 +464,10 @@ class CadToGisDialog(QDialog):
                     on_progress=self._plain_log
                 )
 
-                # Optional augment (best with ezdxf; OGR fallback may skip)
+                # Optional augment (needs ezdxf + a DXF; skipped for direct GDAL-CAD DWG reads)
                 try:
-                    if _augment and (self.chk_text_attrs.isChecked() or self.chk_block_attrs.isChecked()):
+                    if (_augment and not input_for_convert.lower().endswith(".dwg")
+                            and (self.chk_text_attrs.isChecked() or self.chk_block_attrs.isChecked())):
                         extras = _augment.collect_annotations_and_blocks(
                             input_for_convert,
                             src_epsg=src_epsg,

@@ -5,10 +5,7 @@ from typing import List, Optional, Tuple
 # Local imports: expect sibling 'services' package in parent
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from services.conversion_service import precise_convert, write_outputs
-try:
-    from services.dwg_support import dwg_to_temp_dxf_auto
-except Exception:
-    dwg_to_temp_dxf_auto = None  # optional
+from services import dwg_support as dwg
 
 def find_cad_files(root: str, exts: Tuple[str, ...] = (".dxf", ".dwg")) -> List[str]:
     out: List[str] = []
@@ -28,11 +25,13 @@ def convert_one(cad_path: str, source_epsg: int, target_epsg: Optional[int],
     input_for_convert = cad_path
     temp_dir = None
     if cad_path.lower().endswith(".dwg"):
-        if dwg_to_temp_dxf_auto is None:
-            raise RuntimeError("DWG given but no converter available.")
-        log(f"[DWG] Converting to DXF: {cad_path}")
-        input_for_convert = dwg_to_temp_dxf_auto(cad_path, prefer=dwg_prefer, dxf_version=dxf_version)
-        temp_dir = os.path.dirname(input_for_convert)
+        try:
+            kind, input_for_convert = dwg.open_dwg(cad_path, prefer=dwg_prefer, dxf_version=dxf_version,
+                                                   on_progress=lambda m: log(f"    {m}"))
+        except dwg.DwgUnavailableError as ex:
+            raise RuntimeError(ex.guidance)
+        if kind == "dxf":
+            temp_dir = os.path.dirname(input_for_convert)
     try:
         t0 = time.time()
         buckets = precise_convert([input_for_convert], source_epsg=source_epsg, target_epsg=target_epsg,
@@ -63,7 +62,16 @@ def main():
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--dwg-prefer", default="auto", choices=["auto","oda","libredwg"])
     ap.add_argument("--dxf-version", default="ACAD2013")
+    ap.add_argument("--oda-path", default=None, help="remember this ODAFileConverter executable")
+    ap.add_argument("--download-libredwg", action="store_true",
+                    help="download LibreDWG (Windows, GPL-3.0) into the user config folder first")
     args = ap.parse_args()
+
+    if args.oda_path:
+        dwg.set_oda_path(args.oda_path)
+    if args.download_libredwg:
+        dwg.download_libredwg(on_progress=log)
+    print(f"[INFO] DWG reader: {dwg.detect_status()['summary']}")
 
     input_root = os.path.abspath(args.input_root)
     driver = args.driver.upper()

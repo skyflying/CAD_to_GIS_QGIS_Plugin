@@ -1,6 +1,6 @@
 import os, shutil
 from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterFile, QgsProcessingParameterString,    QgsProcessingParameterBoolean, QgsProcessingParameterEnum, QgsProcessingParameterNumber,    QgsProcessingParameterFileDestination, QgsProcessingParameterFolderDestination, QgsProcessingOutputHtml,    QgsVectorLayer, QgsProject, QgsProcessingException)
-from .services.dwg_support import dwg_to_temp_dxf_auto
+from .services import dwg_support as dwg
 from .services import deps as _deps
 
 class AlgCadToGisConvert(QgsProcessingAlgorithm):
@@ -69,9 +69,18 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
         input_for_convert = cad_path
         temp_dir = None
         if cad_path.lower().endswith('.dwg'):
-            temp_dxf = dwg_to_temp_dxf_auto(cad_path, prefer=dwg_pref, dxf_version=dxf_version)
-            input_for_convert = temp_dxf
-            temp_dir = os.path.dirname(temp_dxf)
+            # ODA -> LibreDWG -> GDAL CAD driver (R2000); otherwise explain what to install
+            try:
+                kind, p = dwg.open_dwg(cad_path, prefer=dwg_pref, dxf_version=dxf_version,
+                                       on_progress=feedback.pushInfo)
+            except dwg.DwgUnavailableError as ex:
+                raise QgsProcessingException(ex.guidance)
+            input_for_convert = p
+            if kind == 'dxf':
+                temp_dir = os.path.dirname(p)
+            else:
+                feedback.reportError('No ODA / LibreDWG: DWG R2000 read directly with GDAL '
+                                     '(blocks not merged; some entities may be missing).', fatalError=False)
 
         try:
             buckets = precise_convert([input_for_convert], source_epsg=src_epsg, target_epsg=tgt_epsg,
