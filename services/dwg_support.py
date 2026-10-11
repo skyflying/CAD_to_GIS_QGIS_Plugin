@@ -20,11 +20,14 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - runs ODA/LibreDWG converters with list args, no shell
 import sys
 import tempfile
 import zipfile
 from typing import Callable, Dict, List, Optional, Tuple
+import logging
+
+_log = logging.getLogger(__name__)
 
 ProgressCB = Optional[Callable[[str], None]]
 
@@ -55,7 +58,7 @@ def _say(cb: ProgressCB, msg: str):
         try:
             cb(msg)
         except Exception:
-            pass
+            _log.debug("_say: ignored exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------
@@ -90,7 +93,7 @@ def save_config(cfg: Dict[str, str]) -> None:
         with open(_config_file(), "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception:
-        pass
+        _log.debug("save_config: ignored exception", exc_info=True)
 
 
 def set_oda_path(path: Optional[str]) -> None:
@@ -209,7 +212,7 @@ def dwg_version(path: str) -> Tuple[str, str]:
         if magic.startswith("AC"):
             return magic, DWG_VERSIONS.get(magic, magic)
     except Exception:
-        pass
+        _log.debug("dwg_version: ignored exception", exc_info=True)
     return "", "unknown"
 
 
@@ -245,10 +248,17 @@ def detect_dwg_converter() -> str:
 # ---------------------------------------------------------------------
 
 def _run(cmd: List[str], timeout: int = 900) -> subprocess.CompletedProcess:
+    """Run a converter executable. cmd[0] must be an existing file (the ODA / LibreDWG
+    binary found or set by the user) and is made absolute; arguments are a list, never
+    a shell string."""
+    exe = cmd[0] if cmd else ""
+    if not os.path.isfile(exe):
+        raise RuntimeError(f"Converter executable not found: {exe!r}")
+    cmd = [os.path.abspath(exe)] + list(cmd[1:])
     kw = {}
     if os.name == "nt":
         kw["creationflags"] = 0x08000000          # CREATE_NO_WINDOW (ODA pops up a window)
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,  # nosec B603
                           text=True, encoding="utf-8", errors="replace", timeout=timeout, **kw)
 
 
@@ -371,8 +381,11 @@ def libredwg_download_supported() -> bool:
 
 def _http_get(url: str, timeout: int = 60):
     import urllib.request
+    if not url.startswith("https://github.com/"):
+        raise ValueError(f"Refusing to download from an unexpected URL: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "CAD_to_GIS"})
-    return urllib.request.urlopen(req, timeout=timeout)   # honours system/IE proxy settings
+    # scheme/host checked above; honours system/IE proxy settings
+    return urllib.request.urlopen(req, timeout=timeout)  # nosec B310
 
 
 def _latest_libredwg_version() -> str:
@@ -383,7 +396,7 @@ def _latest_libredwg_version() -> str:
             if m:
                 return m.group(1)
     except Exception:
-        pass
+        _log.debug("_latest_libredwg_version: ignored exception", exc_info=True)
     return LIBREDWG_FALLBACK_VERSION
 
 
@@ -424,7 +437,7 @@ def download_libredwg(on_progress: ProgressCB = None,
                     try:
                         on_percent(pct)
                     except Exception:
-                        pass
+                        _log.debug("download_libredwg: ignored exception", exc_info=True)
     _say(on_progress, f"[libredwg] {asset}: {got / 1e6:.1f} MB, SHA-256 {h.hexdigest()}")
 
     try:
@@ -443,7 +456,7 @@ def download_libredwg(on_progress: ProgressCB = None,
         try:
             os.remove(tmp_zip)
         except Exception:
-            pass
+            _log.debug("download_libredwg: ignored exception", exc_info=True)
 
     hits = glob.glob(os.path.join(dest, "**", "dwg2dxf.exe"), recursive=True)
     if not hits:

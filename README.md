@@ -59,6 +59,17 @@ This plugin adds a menu entry in QGIS that opens a clean dialog for CAD→GIS co
 
 ---
 
+## 📦 Requirements & compatibility
+
+- **QGIS 3.22 – 4.x** (Qt5 and Qt6).
+- Python packages inside QGIS's Python: **geopandas, pandas, shapely, pyproj, pyogrio (or fiona)**; **ezdxf** recommended (without it the GDAL/OGR pipeline is used).
+  QGIS does not ship geopandas. The plugin still loads, shows *Python: ✖ Missing …* and offers **Install Python packages…** (pip `--user`, Windows/macOS, after confirmation).
+  Manual install: *OSGeo4W Shell* → `python -m pip install geopandas ezdxf`, then restart QGIS. Linux: `sudo apt install python3-geopandas python3-ezdxf`.
+
+## 🚀 Release
+
+`python tools/make_release_zip.py` → `dist/cad_to_gis_convert-<version>.zip` (single top folder `cad_to_gis_convert`, the plugin id on plugins.qgis.org). Bump `version` in `metadata.txt` first — every upload needs a new version.
+
 ## 📐 DWG support (no ODA required)
 
 DWG files are opened through an automatic fallback chain:

@@ -12,12 +12,19 @@ geom is one of "LINE", "POLYGON", "POINT".
 """
 
 from __future__ import annotations
-from typing import Tuple, Dict, List, Optional, Callable, Iterator
+from typing import TYPE_CHECKING, Tuple, Dict, List, Optional, Callable, Iterator
+
+if TYPE_CHECKING:  # type hints only; geopandas is imported lazily inside the functions
+    import geopandas as gpd  # noqa: F401
 from contextlib import contextmanager
 import math
 import os
 import re
-import pandas as pd
+import logging
+
+_log = logging.getLogger(__name__)
+# NOTE: pandas / geopandas / shapely are imported inside functions, so this module
+# can be imported (e.g. by the QGIS plugin at load time) even when they are missing.
 
 ProgressCB = Optional[Callable[[str], None]]
 
@@ -32,7 +39,7 @@ def _make_say(on_progress: ProgressCB):
             try:
                 on_progress(m)
             except Exception:
-                pass
+                _log.debug("say: ignored exception", exc_info=True)
     return say
 
 
@@ -111,7 +118,7 @@ def _coerce_paths(src_path, dxf_paths_kw=None) -> List[str]:
                                 out.append(str(p))
                         return
                 except Exception:
-                    pass
+                    _log.debug("_eat: ignored exception", exc_info=True)
                 s2 = s.strip("[]").strip().strip("'\"")
                 if s2:
                     out.append(s2)
@@ -205,6 +212,7 @@ def _grid_snap_lines(lines, tol: float):
                 if ls2.length > 0:
                     out.append(ls2)
         except Exception:
+            _log.debug("_grid_snap_lines: ignored exception", exc_info=True)
             continue
     return out
 
@@ -246,6 +254,7 @@ def _merge_lines_graph(lines, tol: float):
             b = (q(coords[-1][0]), q(coords[-1][1]))
             edges.append((a, b, coords))
         except Exception:
+            _log.debug("_merge_lines_graph: ignored exception", exc_info=True)
             continue
     if not edges:
         return None
@@ -324,6 +333,7 @@ def _even_odd_polygon(rings: List[List[tuple]]):
             if not pg.is_empty and pg.area > 0:
                 polys.append(pg)
         except Exception:
+            _log.debug("_even_odd_polygon: ignored exception", exc_info=True)
             continue
     if not polys:
         return None
@@ -438,7 +448,7 @@ def _hatch_polygon(e, dist: float):
                         ring.append(ring[0])
                     rings.append(ring)
         except Exception:
-            pass
+            _log.debug("_hatch_polygon: ignored exception", exc_info=True)
     return _even_odd_polygon(rings)
 
 
@@ -484,7 +494,7 @@ def _precise_rows_from_entity(e, layer, include_3d, dist) -> List[dict]:
             if pg is not None:
                 rows.append({"layer": layer, "geom": "POLYGON", "geometry": pg})
         except Exception:
-            pass
+            _log.debug("_precise_rows_from_entity: ignored exception", exc_info=True)
     return rows
 
 
@@ -501,12 +511,12 @@ def _extract_block_meta(e) -> dict:
         meta["BLK_Y"] = float(ip.y)
         meta["BLK_Z"] = float(ip.z)
     except Exception:
-        pass
+        _log.debug("_extract_block_meta: ignored exception", exc_info=True)
     for k_src, k_out in [("rotation", "BLK_ROT"), ("xscale", "BLK_SX"), ("yscale", "BLK_SY"), ("zscale", "BLK_SZ")]:
         try:
             meta[k_out] = float(e.dxf.get(k_src))
         except Exception:
-            pass
+            _log.debug("_extract_block_meta: ignored exception", exc_info=True)
     try:
         for a in (getattr(e, "attribs", None) or []):
             try:
@@ -516,9 +526,10 @@ def _extract_block_meta(e) -> dict:
                 key = "ATT_" + re.sub(r"[^0-9A-Za-z_]+", "_", tag.upper())
                 meta[key] = "" if a.dxf.text is None else str(a.dxf.text)
             except Exception:
+                _log.debug("_extract_block_meta: ignored exception", exc_info=True)
                 continue
     except Exception:
-        pass
+        _log.debug("_extract_block_meta: ignored exception", exc_info=True)
     return meta
 
 
@@ -758,13 +769,13 @@ def _dxf_encoding_hint(path: str) -> Optional[str]:
             head = f.read(256 * 1024)
         if head.startswith(b"AutoCAD Binary DXF"):
             return None
-        lines = [l.strip() for l in head.decode("latin-1", "ignore").splitlines()]
-        for i, l in enumerate(lines[:-2]):
-            if l == "$ACADVER":
+        lines = [ln.strip() for ln in head.decode("latin-1", "ignore").splitlines()]
+        for i, ln in enumerate(lines[:-2]):
+            if ln == "$ACADVER":
                 ver = lines[i + 2].upper()
                 return "UTF-8" if ver >= "AC1021" else None
     except Exception:
-        pass
+        _log.debug("_dxf_encoding_hint: ignored exception", exc_info=True)
     return None
 
 
@@ -860,6 +871,7 @@ def _ogr_collect_inserts(path: str, encoding: Optional[str]) -> Dict[str, dict]:
                 if h:
                     out[str(h)] = meta
             except Exception:
+                _log.debug("_ogr_collect_inserts: ignored exception", exc_info=True)
                 continue
         ds = None
     return out
@@ -1067,6 +1079,7 @@ def _convert_gdal_cad(
 def _merge_buckets(a: dict, b: dict) -> dict:
     """Combine two bucket dicts (same CRS), concatenating shared (layer, geom) keys."""
     import geopandas as gpd
+    import pandas as pd
     out = dict(a)
     for k, g in b.items():
         if k in out:
@@ -1193,7 +1206,7 @@ def _jsonable(v):
         if isinstance(v, np.generic):
             v = v.item()
     except Exception:
-        pass
+        _log.debug("_jsonable: ignored exception", exc_info=True)
     if v is None:
         return None
     if isinstance(v, float):
@@ -1209,7 +1222,7 @@ def _write_prj(shp_path: str, crs):
             with open(os.path.splitext(shp_path)[0] + ".prj", "w", encoding="utf-8") as f:
                 f.write(crs.to_wkt("WKT1_ESRI"))
     except Exception:
-        pass
+        _log.debug("_write_prj: ignored exception", exc_info=True)
 
 
 def write_outputs(
@@ -1282,7 +1295,7 @@ def write_outputs(
                 try:
                     os.remove(os.path.splitext(fpath)[0] + ext)
                 except Exception:
-                    pass
+                    _log.debug("write_outputs: ignored exception", exc_info=True)
         try:
             gdf = _normalize_bucket_geoms(key, gdf)
             if gdf.empty:

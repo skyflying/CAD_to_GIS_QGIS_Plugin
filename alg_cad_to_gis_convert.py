@@ -3,6 +3,19 @@ from qgis.core import (QgsProcessingAlgorithm, QgsProcessingParameterFile, QgsPr
 from .services import dwg_support as dwg
 from .services import deps as _deps
 
+# QGIS 3.36+/4 moved these enums into Qgis.*; the old class enums are gone in QGIS 4.
+# The fallbacks use the fully scoped names (PyQt5 >= 5.11 accepts them), which also
+# satisfies the plugin repository's QGIS 4 enum check.
+try:
+    from qgis.core import Qgis
+    _INT = Qgis.ProcessingNumberParameterType.Integer
+    _DBL = Qgis.ProcessingNumberParameterType.Double
+    _NO_THREADING = Qgis.ProcessingAlgorithmFlag.NoThreading
+except (ImportError, AttributeError):          # QGIS 3.22 - 3.34
+    _INT = QgsProcessingParameterNumber.Type.Integer
+    _DBL = QgsProcessingParameterNumber.Type.Double
+    _NO_THREADING = QgsProcessingAlgorithm.Flag.FlagNoThreading
+
 class AlgCadToGisConvert(QgsProcessingAlgorithm):
     P_INPUT='INPUT'; P_LAYERS='LAYERS'; P_SRC_EPSG='SRC_EPSG'; P_TGT_EPSG='TGT_EPSG'; P_MODE='MODE'; P_MERGE_TOL='MERGE_TOL'    ; P_DRIVER='DRIVER'; P_OUT_GPKG='OUT_GPKG'; P_OUT_FOLDER='OUT_FOLDER'; P_OVERWRITE='OVERWRITE'; P_LOAD='LOAD'; P_DWG_PREFER='DWG_PREFER'; P_DXF_VERSION='DXF_VERSION'
     O_SUMMARY='SUMMARY'
@@ -19,16 +32,16 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
 
     # Output layers are added to the project at the end of processAlgorithm();
     # QgsProject must only be touched from the main thread.
-    def flags(self): return super().flags() | QgsProcessingAlgorithm.FlagNoThreading
+    def flags(self): return super().flags() | _NO_THREADING
 
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFile(self.P_INPUT,'Input CAD file (DXF or DWG)'))
         self.addParameter(QgsProcessingParameterString(self.P_LAYERS,'Layer names (CSV, optional; leave empty for ALL)', optional=True))
-        self.addParameter(QgsProcessingParameterNumber(self.P_SRC_EPSG,'Source EPSG', type=QgsProcessingParameterNumber.Integer, defaultValue=3826))
+        self.addParameter(QgsProcessingParameterNumber(self.P_SRC_EPSG,'Source EPSG', type=_INT, defaultValue=3826))
         self.addParameter(QgsProcessingParameterString(self.P_TGT_EPSG,'Target EPSG (optional)', optional=True))
         self.addParameter(QgsProcessingParameterEnum(self.P_MODE,'Block handling mode', options=['keep-merge','explode'], defaultValue=0))
         # Default merge tolerance = 0.0
-        self.addParameter(QgsProcessingParameterNumber(self.P_MERGE_TOL,'Line-merge tolerance', type=QgsProcessingParameterNumber.Double, defaultValue=0.0))
+        self.addParameter(QgsProcessingParameterNumber(self.P_MERGE_TOL,'Line-merge tolerance', type=_DBL, defaultValue=0.0))
         self.addParameter(QgsProcessingParameterEnum(self.P_DRIVER,'Output driver', options=['GPKG','ESRI Shapefile'], defaultValue=0))
         self.addParameter(QgsProcessingParameterFileDestination(self.P_OUT_GPKG,'Output GeoPackage (for driver=GPKG)', fileFilter='GeoPackage (*.gpkg)', optional=True))
         self.addParameter(QgsProcessingParameterFolderDestination(self.P_OUT_FOLDER,'Output folder (for driver=SHP)', optional=True))
@@ -39,11 +52,10 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
         self.addOutput(QgsProcessingOutputHtml(self.O_SUMMARY,'Conversion summary'))
 
     def processAlgorithm(self, parameters, context, feedback):
-        # Ensure ezdxf safely
-        try:
-            _deps.ensure_ezdxf_safe(feedback)
-        except Exception as ex:
-            raise QgsProcessingException(f"Failed to ensure ezdxf is installed: {ex}")
+        dep = _deps.check_dependencies()
+        if not dep["ok"]:
+            raise QgsProcessingException(_deps.install_instructions(dep["missing_required"]))
+        _deps.ensure_ezdxf_safe(feedback)
 
         from .services.conversion_service import precise_convert, write_outputs
 

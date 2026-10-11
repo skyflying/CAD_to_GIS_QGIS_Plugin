@@ -1,37 +1,44 @@
 [general]
 name=CAD To GIS Convert
 qgisMinimumVersion=3.22
-qgisMaximumVersion=3.99
-version=1.4.0
+qgisMaximumVersion=4.99
+description=Converts DXF/DWG into GIS layers grouped by CAD layers, with block-preserving merge, reprojection and export to GeoPackage or Shapefile.
+version=1.5.1
 author=Mingyi Hsu
 email=skyflying07@gmail.com
-about=This plugin wraps your CAD-to-GIS conversion engine into a QGIS Plugin. It supports DXF/DWG input (via ODA File Converter or LibreDWG), block-preserving merge, reprojection, and export to GPKG or Shapefile with auto-load.
-homepage=https://github.com/skyflying
-repository=https://github.com/skyflying/CAD_to_GIS_QGIS_Plugin
+
+about=Converts CAD drawings (DXF, and DWG via ODA File Converter, LibreDWG or GDAL) into GIS layers grouped by CAD layer and geometry type (LINE / POLYGON / POINT).
+    Features: per-INSERT block preservation (keep-merge) or explode, nested blocks, hatches with holes, block attributes (ATT_*), TEXT/MTEXT extraction, reprojection (e.g. TWD97 EPSG:3826 to WGS84), WGS84 bounding-box filter, Unicode (e.g. Chinese) layer names, export to GeoPackage or Shapefile and automatic loading into QGIS. Also available as a Processing algorithm.
+    DWG: if neither ODA File Converter nor LibreDWG is installed, LibreDWG (GPL-3.0, Windows) can be downloaded from its official GitHub releases on request; DWG R2000 can always be read with GDAL's built-in CAD driver.
+    Python requirements: geopandas, pandas, shapely, pyproj and pyogrio (or fiona); ezdxf is recommended. QGIS does not ship geopandas - the plugin shows what is missing and can install it with pip on Windows/macOS after confirmation (Linux: use your distribution packages, e.g. python3-geopandas).
+
 tracker=https://github.com/skyflying/CAD_to_GIS_QGIS_Plugin/issues
-category=Analysis
-description=CAD to GIS Converter plugin. Converts DXF/DWG into GIS layers grouped by CAD layers. Supports block-preserving merge (per-instance), reprojection, PRJ generation, export to GPKG or Shapefile, auto-load into QGIS, and optional annotation extraction.
+repository=https://github.com/skyflying/CAD_to_GIS_QGIS_Plugin
+homepage=https://github.com/skyflying
+
 hasProcessingProvider=yes
-icon=icons/icon.ico
-experimental=False
-deprecated=False
-tags=DWG,DXF,SHP,GPKG,Block
-license=GPL-3.0-or-later
 changelog=
-    1.4.0 - 2026-10-11
-        * DWG works without ODA: ODA -> LibreDWG -> GDAL CAD driver (DWG R2000) fallback chain
-        * DWG reader status + "Set ODA path", "Download LibreDWG" (Windows), "ODA download page", "Re-detect"
-        * Guidance dialog when no reader can open the DWG
-        * Fixed ODA File Converter call (wrong argument order; converted the whole input folder)
-    1.3.1 - 2026-10-11
-        * Target EPSG / bbox now applied in the ezdxf pipeline; OGR pipeline reprojects to EPSG:4326 too
-        * Line-merge tolerance parameter was ignored (wrong keyword) - fixed
-        * GPKG layers named <Layer>_<GEOM>: LINE/POLYGON/POINT of one CAD layer no longer overwrite each other
-        * Chinese / non-ASCII layer names kept in output names (no more "__LINE.shp" collisions)
+    1.5.1 - 2026-10-11
+        * Security scan clean-up for plugins.qgis.org: no Bandit / detect-secrets / critical flake8 findings
+        * Fixed undefined name 'gpd' in type hints (flake8 F821)
+        * Ignored errors are now logged (logging.debug) instead of silently swallowed; no bare except
+        * pip installer only accepts the plugin's own dependency names; converter calls require an existing executable
+        * Processing enums use fully scoped names (QGIS 4 enum check)
+    1.5.0 - 2026-10-11
+        * QGIS 4 / Qt6 compatible (scoped enums, QAction import, Processing enums); still works on QGIS 3.22+
+        * Plugin loads even without geopandas/shapely; shows missing Python packages and can install them (pip, with consent)
+        * DWG without ODA: ODA -> LibreDWG (optional download) -> GDAL CAD driver (R2000) chain, with status and guidance dialog
+        * Fixed ODA File Converter call (wrong argument order; converted the whole folder)
+        * Target EPSG and bbox now applied in the ezdxf pipeline; OGR pipeline reprojects to EPSG:4326 too
+        * Line-merge tolerance was ignored - fixed
+        * GPKG layers are named <Layer>_<GEOM>: LINE/POLYGON/POINT of one CAD layer no longer overwrite each other
+        * Chinese / non-ASCII layer names preserved in output names and in the layer list
         * Nested blocks, layer-0 inheritance, hatch polyline boundaries and holes, arcs across 0 deg
-        * OGR fallback: per-INSERT features via GDAL, block attributes by handle, UTF-8 for R2007+ DXF
-        * Processing provider registered (createInstance added); block attributes extraction fixed
-        * GDAL config options no longer changed globally inside QGIS
+        * Block attributes (ATT_*) extraction fixed; empty layer selection now means all layers
+        * GDAL config options are no longer changed globally inside QGIS
+        * Processing algorithm registered (createInstance, no-threading); menu moved to Vector menu; PNG icon
+    1.4.0 - 2025-10-13
+        * Fix the bugs about export to gpkg file issue
     1.3.0 - 2025-09-05
         * Fix the bugs about using the ogr
         * Optimize execution performance
@@ -46,3 +53,11 @@ changelog=
         * Added spline and hatch convert
     1.0.0 - 2025-08-18
         * Initial release
+
+tags=dwg,dxf,cad,autocad,shp,gpkg,geopackage,block,conversion,import,processing
+category=Vector
+icon=icons/icon.png
+experimental=False
+deprecated=False
+server=False
+license=GPL-3.0-or-later

@@ -1,18 +1,28 @@
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, List, Callable, Iterable
-from shapely.geometry import Point
+import logging
 
-try:
-    import geopandas as gpd
-except Exception:
-    gpd = None
+_log = logging.getLogger(__name__)
+
+# Heavy imports are deferred: this module is imported when the plugin loads, and
+# QGIS must be able to load the plugin even if shapely/geopandas are not installed.
+gpd = None
+
+
+def _ensure_gpd():
+    global gpd
+    if gpd is None:
+        import geopandas as _gpd
+        gpd = _gpd
+    return gpd
 
 ProgressCB = Optional[Callable[[str], None]]
 
 def _say(cb: ProgressCB, msg: str):
     if cb:
         try: cb(msg)
-        except: pass
+        except Exception:
+            _log.debug("_say: ignored exception", exc_info=True)
 
 def _safe_s(val):
     try:
@@ -45,11 +55,14 @@ def collect_annotations_and_blocks(
       nothing in that case, although the UI says "leave empty for all").
 
     """
-    if gpd is None:
-        raise RuntimeError("geopandas is required for TEXT/MTEXT/BLOCK augmentation but was not found.")
+    try:
+        _ensure_gpd()
+        from shapely.geometry import Point
+    except Exception as ex:
+        raise RuntimeError(f"geopandas/shapely are required for TEXT/MTEXT/BLOCK extraction: {ex}")
 
     import ezdxf
-    out: Dict[Tuple[str,str], gpd.GeoDataFrame] = {}
+    out: Dict[Tuple[str,str], "gpd.GeoDataFrame"] = {}
 
     try:
         doc = ezdxf.readfile(dxf_path)
@@ -85,12 +98,14 @@ def collect_annotations_and_blocks(
                     "src_layer": src_layer,
                 })
             except Exception:
+                _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
                 continue
         if rows_text:
             gdf = gpd.GeoDataFrame(rows_text, geometry="geometry", crs=f"EPSG:{src_epsg or 4326}")
             if tgt_epsg and int(tgt_epsg) != int(src_epsg or 4326):
                 try: gdf = gdf.to_crs(epsg=int(tgt_epsg))
-                except Exception: pass
+                except Exception:
+                    _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
             for (layer, geom), sub in gdf.groupby(["layer","geom"]):
                 out[(str(layer), str(geom))] = sub.reset_index(drop=True)
 
@@ -115,7 +130,7 @@ def collect_annotations_and_blocks(
                         val = _safe_s(getattr(a.dxf, "text", None))
                         if tag: row[f"att_{tag}"] = val
                 except Exception:
-                    pass
+                    _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
                 if keep_block_transform:
                     try:
                         row.update({
@@ -126,15 +141,17 @@ def collect_annotations_and_blocks(
                             "blk_sz": float(getattr(ins.dxf, "zscale", 1.0) or 1.0),
                         })
                     except Exception:
-                        pass
+                        _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
                 rows_blk.append(row)
             except Exception:
+                _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
                 continue
         if rows_blk:
             gdfb = gpd.GeoDataFrame(rows_blk, geometry="geometry", crs=f"EPSG:{src_epsg or 4326}")
             if tgt_epsg and int(tgt_epsg) != int(src_epsg or 4326):
                 try: gdfb = gdfb.to_crs(epsg=int(tgt_epsg))
-                except Exception: pass
+                except Exception:
+                    _log.debug("collect_annotations_and_blocks: ignored exception", exc_info=True)
             out[("BLOCKS","POINT")] = gdfb.reset_index(drop=True)
 
     if not out:
@@ -145,8 +162,7 @@ def collect_annotations_and_blocks(
     return out
 
 def attach_block_transform_to_buckets(buckets, blocks, *, on_progress=None):
-    if gpd is None:
-        raise RuntimeError("geopandas is required for attach_block_transform_to_buckets but was not found.")
+    _ensure_gpd()
     if blocks is None or len(blocks) == 0:
         _say(on_progress, "[augment] no BLOCKS to attach"); return
 

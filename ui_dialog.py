@@ -10,6 +10,9 @@ from qgis.core import QgsVectorLayer, QgsProject
 from .services import dwg_support as dwg
 from .services import deps as _deps
 from .services import augment as _augment
+import logging
+
+_log = logging.getLogger(__name__)
 
 # OGR fallback imports
 # NOTE: do NOT call ogr.UseExceptions() or gdal.SetConfigOption() at import time:
@@ -26,7 +29,11 @@ def _ogr_list_layers(dxf_path: str):
     names = []
     if ogr is None or not os.path.exists(dxf_path):
         return names
-    ds = ogr.Open(dxf_path, 0)
+    # same encoding handling as the conversion engine (R2007+ DXF is UTF-8)
+    from .services.conversion_service import _dxf_encoding_hint, _gdal_config
+    enc = _dxf_encoding_hint(dxf_path)
+    with _gdal_config({"DXF_ENCODING": enc} if enc else {}):
+        ds = ogr.Open(dxf_path, 0)
     if ds is None:
         return names
     lyr = ds.GetLayerByName("entities") or (ds.GetLayer(0) if ds.GetLayerCount() else None)
@@ -41,7 +48,7 @@ def _ogr_list_layers(dxf_path: str):
                     names.append(str(v))
             ds.ReleaseResultSet(res)
     except Exception:
-        pass
+        _log.debug("_ogr_list_layers: ignored exception", exc_info=True)
     if not names:
         seen = set()
         lyr.ResetReading()
@@ -51,7 +58,7 @@ def _ogr_list_layers(dxf_path: str):
                 if v and v not in seen:
                     seen.add(v); names.append(str(v))
             except Exception:
-                pass
+                _log.debug("_ogr_list_layers: ignored exception", exc_info=True)
     ds = None
     return sorted(set(names))
 
@@ -61,7 +68,7 @@ class CadToGisDialog(QDialog):
         try:
             return int(widget.value())  # QSpinBox
         except Exception:
-            pass
+            _log.debug("_parse_epsg: ignored exception", exc_info=True)
         try:
             txt = widget.text().strip()
             return int(txt) if txt else default
@@ -113,9 +120,9 @@ class CadToGisDialog(QDialog):
         grid.addWidget(wrap2, 1, 1, 1, 2)
 
         # Row 2: Layer preview list
-        grid.addWidget(QLabel("Layer Preview"), 2, 0, Qt.AlignTop)
+        grid.addWidget(QLabel("Layer Preview"), 2, 0, Qt.AlignmentFlag.AlignTop)
         self.layer_list = QListWidget()
-        self.layer_list.setSelectionMode(QAbstractItemView.MultiSelection)  # Qt5/Qt6-safe
+        self.layer_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)  # Qt5/Qt6-safe
         self.layer_list.itemSelectionChanged.connect(self.sync_layers_csv_from_preview)
         self.layer_list.itemChanged.connect(self.sync_layers_csv_from_preview)
         grid.addWidget(self.layer_list, 2, 1, 1, 2)
@@ -160,7 +167,7 @@ class CadToGisDialog(QDialog):
         grid.addWidget(wrap3, 9, 1, 1, 2)
 
         # Row 10: DWG options
-        grid.addWidget(QLabel("DWG converter preference"), 10, 0, Qt.AlignTop)
+        grid.addWidget(QLabel("DWG converter preference"), 10, 0, Qt.AlignmentFlag.AlignTop)
         self.dwg_pref = QComboBox(); self.dwg_pref.addItems(["auto","oda","libredwg"])
         self.dwg_pref.setToolTip("auto: ODA → LibreDWG → GDAL CAD driver (DWG R2000 only)")
         # DWG reader status + tools under the combo
@@ -183,7 +190,7 @@ class CadToGisDialog(QDialog):
         grid.addWidget(self.dxf_version, 11, 1, 1, 2)
 
         # Row 12: Options
-        grid.addWidget(QLabel("Options"), 12, 0, Qt.AlignTop)
+        grid.addWidget(QLabel("Options"), 12, 0, Qt.AlignmentFlag.AlignTop)
         options_wrap = QWidget(); fl = QVBoxLayout(options_wrap); fl.setContentsMargins(0,0,0,0)
         self.chk_overwrite = QCheckBox("Overwrite existing"); self.chk_overwrite.setChecked(False)
         self.chk_load = QCheckBox("Load outputs into project"); self.chk_load.setChecked(True)
@@ -192,6 +199,12 @@ class CadToGisDialog(QDialog):
         self.chk_block_transform = QCheckBox("Keep block transform fields (x,y,rotation,scale) — only selected layers"); self.chk_block_transform.setChecked(True)
         fl.addWidget(self.chk_overwrite); fl.addWidget(self.chk_load)
         fl.addWidget(self.chk_text_attrs); fl.addWidget(self.chk_block_attrs); fl.addWidget(self.chk_block_transform)
+        # Python package status (geopandas etc. are not shipped with QGIS)
+        dep_row = QHBoxLayout()
+        self.lbl_deps = QLabel()
+        self.btn_deps = QPushButton("Install Python packages…"); self.btn_deps.clicked.connect(self.on_install_deps)
+        dep_row.addWidget(self.lbl_deps, 1); dep_row.addWidget(self.btn_deps)
+        fl.addLayout(dep_row)
         grid.addWidget(options_wrap, 12, 1, 1, 2)
 
         # Row 13: Run
@@ -207,8 +220,47 @@ class CadToGisDialog(QDialog):
         self.driver.currentIndexChanged.connect(self.on_driver_changed)
         self.on_driver_changed()
         self.refresh_dwg_status()
+        self.refresh_deps_status()
 
         lay = QVBoxLayout(self); lay.addLayout(grid)
+
+    # ---------------- Python dependencies ----------------
+    def refresh_deps_status(self):
+        st = _deps.check_dependencies()
+        self.lbl_deps.setText(f"Python: {st['summary']}")
+        self.btn_deps.setVisible(bool(st["missing_required"] or st["missing_optional"]))
+        return st
+
+    def on_install_deps(self):
+        st = _deps.check_dependencies()
+        pkgs = list(st["missing_required"]) + list(st["missing_optional"])
+        if not pkgs:
+            self.refresh_deps_status(); return True
+        text = _deps.install_instructions(pkgs)
+        if not _deps.pip_install_supported():
+            QMessageBox.information(self, "Python packages", text)
+            return False
+        ok = QMessageBox.question(
+            self, "Install Python packages",
+            text + "\nInstall now with pip into your user profile (internet required)?")
+        if ok != QMessageBox.StandardButton.Yes:
+            return False
+        self.btn_run.setEnabled(False); self.btn_deps.setEnabled(False)
+        self.log(f"<b>Installing:</b> {html.escape(' '.join(pkgs))}")
+        try:
+            rc = _deps.pip_install(pkgs, on_output=self._plain_log)
+        except Exception as ex:
+            rc = -1
+            self.log(f"<div style='color:#b00'>pip failed: {html.escape(str(ex))}</div>")
+        finally:
+            self.btn_run.setEnabled(True); self.btn_deps.setEnabled(True)
+        st = self.refresh_deps_status()
+        if rc == 0 and st["ok"]:
+            self.log("<b>Packages installed.</b> If conversion still fails, restart QGIS.")
+            return True
+        self.log("<span style='color:#b00'>Installation incomplete — see messages above, "
+                 "or follow the manual steps (OSGeo4W Shell), then restart QGIS.</span>")
+        return False
 
     # ---------------- DWG tools ----------------
     def refresh_dwg_status(self):
@@ -242,7 +294,7 @@ class CadToGisDialog(QDialog):
             self, "Download LibreDWG",
             "Download LibreDWG (GPL-3.0, ~12 MB) from github.com/LibreDWG/libredwg/releases into:\n"
             f"{dwg.config_dir()}\n\nContinue?")
-        if ok != QMessageBox.Yes:
+        if ok != QMessageBox.StandardButton.Yes:
             return False
         dlg = QProgressDialog("Downloading LibreDWG…", None, 0, 100, self)
         dlg.setWindowTitle("LibreDWG"); dlg.setMinimumDuration(0); dlg.setValue(0)
@@ -285,13 +337,13 @@ class CadToGisDialog(QDialog):
                 if attempt == 2:
                     raise RuntimeError(ex.guidance)
                 box = QMessageBox(self)
-                box.setIcon(QMessageBox.Warning)
+                box.setIcon(QMessageBox.Icon.Warning)
                 box.setWindowTitle("Cannot read DWG")
                 box.setText(ex.guidance)
-                b_lib = box.addButton("Download LibreDWG", QMessageBox.AcceptRole) if dwg.libredwg_download_supported() else None
-                b_oda = box.addButton("Set ODA path…", QMessageBox.ActionRole)
-                b_page = box.addButton("ODA download page", QMessageBox.ActionRole)
-                box.addButton(QMessageBox.Cancel)
+                b_lib = box.addButton("Download LibreDWG", QMessageBox.ButtonRole.AcceptRole) if dwg.libredwg_download_supported() else None
+                b_oda = box.addButton("Set ODA path…", QMessageBox.ButtonRole.ActionRole)
+                b_page = box.addButton("ODA download page", QMessageBox.ButtonRole.ActionRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
                 box.exec()
                 clicked = box.clickedButton()
                 if b_lib is not None and clicked is b_lib and self.on_download_libredwg():
@@ -330,9 +382,9 @@ class CadToGisDialog(QDialog):
             self.out_html.append(msg.replace("\n","<br>"))
             try:
             # 滾到最底，確保新訊息可見
-                self.out_html.moveCursor(QTextCursor.End)
+                self.out_html.moveCursor(QTextCursor.MoveOperation.End)
             except Exception:
-                pass
+                _log.debug("log: ignored exception", exc_info=True)
         # ★ 關鍵：立即處理事件，讓 UI 不必等任務結束才重畫
             QCoreApplication.processEvents()
 
@@ -344,7 +396,7 @@ class CadToGisDialog(QDialog):
         names = set()
         for i in range(self.layer_list.count()):
             it = self.layer_list.item(i)
-            if it.checkState() == Qt.Checked or it.isSelected():
+            if it.checkState() == Qt.CheckState.Checked or it.isSelected():
                 names.add(it.text())
         self.layers_edit.setText(", ".join(sorted(names)))
 
@@ -353,7 +405,7 @@ class CadToGisDialog(QDialog):
         for i in range(self.layer_list.count()):
             it = self.layer_list.item(i)
             it.setSelected(True)
-            it.setCheckState(Qt.Checked)
+            it.setCheckState(Qt.CheckState.Checked)
         self.layer_list.blockSignals(False)
         self.sync_layers_csv_from_preview()
 
@@ -362,7 +414,7 @@ class CadToGisDialog(QDialog):
         for i in range(self.layer_list.count()):
             it = self.layer_list.item(i)
             it.setSelected(False)
-            it.setCheckState(Qt.Unchecked)
+            it.setCheckState(Qt.CheckState.Unchecked)
         self.layer_list.blockSignals(False)
         self.sync_layers_csv_from_preview()
 
@@ -400,7 +452,7 @@ class CadToGisDialog(QDialog):
                 self.log("<i>No layers found.</i>")
             else:
                 for nm in names:
-                    it = QListWidgetItem(nm); it.setCheckState(Qt.Unchecked)
+                    it = QListWidgetItem(nm); it.setCheckState(Qt.CheckState.Unchecked)
                     self.layer_list.addItem(it)
                 self.log(f"Found {len(names)} layer(s).")
         except Exception as e:
@@ -416,7 +468,11 @@ class CadToGisDialog(QDialog):
  
         try:
             self.btn_run.setEnabled(False)
-            self.log("<b>Checking dependency: ezdxf</b>")
+            dep = self.refresh_deps_status()
+            if not dep["ok"] and not self.on_install_deps():
+                self.log("<span style='color:#b00'>Missing Python packages: "
+                         f"{html.escape(', '.join(dep['missing_required']))}. Conversion not started.</span>")
+                return
             ez_ok = _deps.ensure_ezdxf_safe(feedback=SimpleFeedback(self))
 
             from .services.conversion_service import precise_convert, write_outputs

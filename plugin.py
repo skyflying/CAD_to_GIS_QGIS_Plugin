@@ -6,14 +6,18 @@ Updated to pass a QWidget parent (iface.mainWindow()) to the dialog.
 
 import os
 
-from qgis.PyQt.QtWidgets import QAction
+try:                                    # Qt6 / QGIS 4
+    from qgis.PyQt.QtGui import QAction
+except ImportError:                     # Qt5 / QGIS 3
+    from qgis.PyQt.QtWidgets import QAction
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import QgsApplication
 
 from .ui_dialog import CadToGisDialog
 
-_ICON = os.path.join(os.path.dirname(__file__), "icons", "icon.ico")
+_ICON = os.path.join(os.path.dirname(__file__), "icons", "icon.png")
+_MENU = "&CAD To GIS Convert"
 
 
 class CadToGisPlugin:
@@ -41,13 +45,13 @@ class CadToGisPlugin:
                               QCoreApplication.translate("CadToGisPlugin", "CAD To GIS Convert"),
                               self.iface.mainWindow())
         self.action.triggered.connect(self.show_dialog)
-        self.iface.addPluginToMenu("&CAD To GIS Convert", self.action)
+        self.iface.addPluginToVectorMenu(_MENU, self.action)    # Vector menu (repository guideline)
         self.iface.addToolBarIcon(self.action)
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
         if self.action:
-            self.iface.removePluginMenu("&CAD To GIS Convert", self.action)
+            self.iface.removePluginVectorMenu(_MENU, self.action)
             self.iface.removeToolBarIcon(self.action)
             self.action = None
         if self.provider is not None:
