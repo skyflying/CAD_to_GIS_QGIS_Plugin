@@ -2,7 +2,7 @@
 name=CAD To GIS Convert
 qgisMinimumVersion=3.22
 qgisMaximumVersion=3.99
-version=1.3.0
+version=1.3.1
 author=Mingyi Hsu
 email=skyflying07@gmail.com
 about=This plugin wraps your CAD-to-GIS conversion engine into a QGIS Plugin. It supports DXF/DWG input (via ODA File Converter or LibreDWG), block-preserving merge, reprojection, and export to GPKG or Shapefile with auto-load.
@@ -18,6 +18,15 @@ deprecated=False
 tags=DWG,DXF,SHP,GPKG,Block
 license=GPL-3.0-or-later
 changelog=
+    1.3.1 - 2026-10-11
+        * Target EPSG / bbox now applied in the ezdxf pipeline; OGR pipeline reprojects to EPSG:4326 too
+        * Line-merge tolerance parameter was ignored (wrong keyword) - fixed
+        * GPKG layers named <Layer>_<GEOM>: LINE/POLYGON/POINT of one CAD layer no longer overwrite each other
+        * Chinese / non-ASCII layer names kept in output names (no more "__LINE.shp" collisions)
+        * Nested blocks, layer-0 inheritance, hatch polyline boundaries and holes, arcs across 0 deg
+        * OGR fallback: per-INSERT features via GDAL, block attributes by handle, UTF-8 for R2007+ DXF
+        * Processing provider registered (createInstance added); block attributes extraction fixed
+        * GDAL config options no longer changed globally inside QGIS
     1.3.0 - 2025-09-05
         * Fix the bugs about using the ogr
         * Optimize execution performance

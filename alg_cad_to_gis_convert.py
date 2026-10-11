@@ -13,6 +13,14 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
     def groupId(self): return 'cad_tools'
     def shortHelpString(self): return 'Convert DXF/DWG into GIS layers grouped by CAD layers.'
 
+    # Required for every Python Processing algorithm -- without it QGIS raises
+    # "createInstance() is not implemented" as soon as the tool is opened.
+    def createInstance(self): return AlgCadToGisConvert()
+
+    # Output layers are added to the project at the end of processAlgorithm();
+    # QgsProject must only be touched from the main thread.
+    def flags(self): return super().flags() | QgsProcessingAlgorithm.FlagNoThreading
+
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFile(self.P_INPUT,'Input CAD file (DXF or DWG)'))
         self.addParameter(QgsProcessingParameterString(self.P_LAYERS,'Layer names (CSV, optional; leave empty for ALL)', optional=True))
@@ -52,7 +60,7 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
         merge_tol = float(self.parameterAsDouble(parameters, self.P_MERGE_TOL, context))
         driver = ['GPKG','ESRI Shapefile'][int(self.parameterAsEnum(parameters, self.P_DRIVER, context))]
         out_gpkg = self.parameterAsFileOutput(parameters, self.P_OUT_GPKG, context)
-        out_folder = self.parameterAsFile(parameters, self.P_OUT_FOLDER, context)
+        out_folder = self.parameterAsString(parameters, self.P_OUT_FOLDER, context)
         dwg_pref = ['auto','oda','libredwg'][int(self.parameterAsEnum(parameters, self.P_DWG_PREFER, context))]
         dxf_version = self.parameterAsString(parameters, self.P_DXF_VERSION, context).strip() or 'ACAD2013'
         overwrite = bool(self.parameterAsBool(parameters, self.P_OVERWRITE, context))
@@ -68,7 +76,7 @@ class AlgCadToGisConvert(QgsProcessingAlgorithm):
         try:
             buckets = precise_convert([input_for_convert], source_epsg=src_epsg, target_epsg=tgt_epsg,
                                       include_3d=False, bbox_wgs84=None, target_layers=target_layers,
-                                      block_mode=mode, line_merge_tol=merge_tol, fallback_explode_lines=True,
+                                      block_mode=mode, merge_tolerance=merge_tol,
                                       on_progress=feedback.pushInfo)
             out_path = out_gpkg if driver=='GPKG' else out_folder
             if not out_path:

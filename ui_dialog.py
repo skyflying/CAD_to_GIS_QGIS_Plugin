@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
-import os, shutil, traceback
+import os, shutil, traceback, html
 from qgis.PyQt.QtWidgets import (QDialog, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QWidget, QTextBrowser, QGridLayout, QListWidget, QListWidgetItem)
+    QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox, QWidget, QTextBrowser, QGridLayout, QListWidget, QListWidgetItem,
+    QAbstractItemView)
+from qgis.PyQt.QtGui import QTextCursor
 from qgis.PyQt.QtCore import Qt, QCoreApplication
 from qgis.core import QgsVectorLayer, QgsProject
 from .services.dwg_support import dwg_to_temp_dxf_auto
@@ -10,17 +12,11 @@ from .services import deps as _deps
 from .services import augment as _augment
 
 # OGR fallback imports
+# NOTE: do NOT call ogr.UseExceptions() or gdal.SetConfigOption() at import time:
+# both are process-wide and silently changed how QGIS itself (and other plugins)
+# open DXF files as soon as this plugin was loaded.
 try:
     from osgeo import ogr, gdal, osr
-    try:
-        ogr.UseExceptions()
-    except Exception:
-        pass
-    try:
-        gdal.SetConfigOption("DXF_INLINE_BLOCKS", "YES")
-        gdal.SetConfigOption("DXF_CLOSED_LINE_AS_POLYGON", "TRUE")
-    except Exception:
-        pass
 except Exception:
     ogr = None
     gdal = None
@@ -119,14 +115,14 @@ class CadToGisDialog(QDialog):
         # Row 2: Layer preview list
         grid.addWidget(QLabel("Layer Preview"), 2, 0, Qt.AlignTop)
         self.layer_list = QListWidget()
-        self.layer_list.setSelectionMode(self.layer_list.MultiSelection)
+        self.layer_list.setSelectionMode(QAbstractItemView.MultiSelection)  # Qt5/Qt6-safe
         self.layer_list.itemSelectionChanged.connect(self.sync_layers_csv_from_preview)
         self.layer_list.itemChanged.connect(self.sync_layers_csv_from_preview)
         grid.addWidget(self.layer_list, 2, 1, 1, 2)
 
         # Row 3: Source EPSG
         grid.addWidget(QLabel("Source EPSG"), 3, 0)
-        self.src_epsg = QLineEdit()
+        self.src_epsg = QLineEdit("3826")   # empty used to fall back silently
         grid.addWidget(self.src_epsg, 3, 1, 1, 2)
 
         # Row 4: Target EPSG
@@ -225,11 +221,15 @@ class CadToGisDialog(QDialog):
             self.out_html.append(msg.replace("\n","<br>"))
             try:
             # 滾到最底，確保新訊息可見
-                self.out_html.moveCursor(self.out_html.textCursor().End)
+                self.out_html.moveCursor(QTextCursor.End)
             except Exception:
                 pass
         # ★ 關鍵：立即處理事件，讓 UI 不必等任務結束才重畫
             QCoreApplication.processEvents()
+
+    def _plain_log(self, s):
+        """Progress text from the engine is plain text (may contain '<' in layer names)."""
+        self.log(html.escape(str(s or "")))
 
     def sync_layers_csv_from_preview(self):
         names = set()
@@ -320,6 +320,8 @@ class CadToGisDialog(QDialog):
             layers_csv = self.layers_edit.text().strip()
             target_layers = [s.strip() for s in layers_csv.split(',') if s.strip()] if layers_csv else []
             src_epsg = self._parse_epsg(self.src_epsg)
+            if not src_epsg:
+                raise RuntimeError("Please enter the Source EPSG (e.g. 3826 for TWD97 / TM2 zone 121).")
             tgt_epsg = self._parse_epsg(self.tgt_epsg)
             mode = self.block_mode.currentText()
             merge_tol = float(self.merge_tol.value())
@@ -328,6 +330,8 @@ class CadToGisDialog(QDialog):
             out_path = self.out_edit.text().strip()
             if not out_path:
                 raise RuntimeError("Please specify output path.")
+            if driver == "GPKG" and not out_path.lower().endswith(".gpkg"):
+                out_path += ".gpkg"
             dwg_pref = self.dwg_pref.currentText()
             dxf_version = self.dxf_version.text().strip() or "ACAD2013"
             overwrite = self.chk_overwrite.isChecked()
@@ -353,7 +357,7 @@ class CadToGisDialog(QDialog):
                     block_mode=mode,
                     merge_tolerance=merge_tol,                     # ← 正確參數名
                     flat_dist_precise=spline_tol,
-                    on_progress=lambda s: self.log(s or "")
+                    on_progress=self._plain_log
                 )
 
                 # Optional augment (best with ezdxf; OGR fallback may skip)
@@ -366,8 +370,8 @@ class CadToGisDialog(QDialog):
                             include_text=self.chk_text_attrs.isChecked(),
                             include_blocks=self.chk_block_attrs.isChecked(),
                             keep_block_transform=self.chk_block_transform.isChecked(),
-                            target_layers=target_layers,
-                            on_progress=lambda s: self.log(s or ""),
+                            target_layers=(target_layers if target_layers else None),
+                            on_progress=self._plain_log,
                         )
                         if extras and isinstance(buckets, dict):
                             buckets.update(extras)
@@ -380,7 +384,7 @@ class CadToGisDialog(QDialog):
                     out_path=out_path,
                     driver="GPKG" if driver=="GPKG" else "ESRI Shapefile",
                     overwrite=overwrite,
-                    on_progress=lambda s: self.log(s or "")
+                    on_progress=self._plain_log
                 )
             finally:
                 if temp_dir and os.path.isdir(temp_dir):
@@ -395,10 +399,11 @@ class CadToGisDialog(QDialog):
                     if v and v.isValid():
                         QgsProject.instance().addMapLayer(v)
 
-            html = "<h3>CAD to GIS Converter</h3><ul>" + "\n".join(
-                [f"<li><b>{w.get('layer')}</b> ({w.get('count')}) → {w.get('path')}</li>" for w in (written or [])]
+            summary = "<h3>CAD to GIS Converter</h3><ul>" + "\n".join(
+                [f"<li><b>{html.escape(str(w.get('layer')))}</b> ({w.get('count')}) → {html.escape(str(w.get('path')))}</li>"
+                 for w in (written or [])]
             ) + "</ul>"
-            self.out_html.append(html)
+            self.out_html.append(summary)
             self.log("<b>Done.</b>")
         except Exception as e:
             tb = traceback.format_exc()

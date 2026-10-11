@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, os, sys, time
+import argparse, os, re, shutil, sys, time
 from typing import List, Optional, Tuple
 
 # Local imports: expect sibling 'services' package in parent
@@ -24,23 +24,30 @@ def log(msg: str):
 def convert_one(cad_path: str, source_epsg: int, target_epsg: Optional[int],
                 target_layers: Optional[List[str]], block_mode: str,
                 line_merge_tol: float, driver: str, out_path: str, overwrite: bool,
-                dwg_prefer: str, dxf_version: str) -> List[dict]:
+                dwg_prefer: str, dxf_version: str, layer_prefix: str = "") -> List[dict]:
     input_for_convert = cad_path
+    temp_dir = None
     if cad_path.lower().endswith(".dwg"):
         if dwg_to_temp_dxf_auto is None:
             raise RuntimeError("DWG given but no converter available.")
         log(f"[DWG] Converting to DXF: {cad_path}")
         input_for_convert = dwg_to_temp_dxf_auto(cad_path, prefer=dwg_prefer, dxf_version=dxf_version)
-    t0 = time.time()
-    buckets = precise_convert([input_for_convert], source_epsg=source_epsg, target_epsg=target_epsg,
-                              include_3d=False, bbox_wgs84=None, target_layers=target_layers,
-                              block_mode=block_mode, line_merge_tol=line_merge_tol,
-                              fallback_explode_lines=True, on_progress=lambda m: log(f"    {m}"))
-    dt = time.time() - t0
-    log(f"[OK] Converted in {dt:.1f}s; writing …")
-    written = write_outputs(buckets, out_path=out_path,
-                            driver=('GPKG' if driver.upper()=='GPKG' else 'ESRI Shapefile'),
-                            overwrite=overwrite, on_progress=lambda m: log(f"    {m}")) or []
+        temp_dir = os.path.dirname(input_for_convert)
+    try:
+        t0 = time.time()
+        buckets = precise_convert([input_for_convert], source_epsg=source_epsg, target_epsg=target_epsg,
+                                  include_3d=False, bbox_wgs84=None, target_layers=target_layers,
+                                  block_mode=block_mode, merge_tolerance=line_merge_tol,
+                                  on_progress=lambda m: log(f"    {m}"))
+        dt = time.time() - t0
+        log(f"[OK] Converted in {dt:.1f}s; writing …")
+        written = write_outputs(buckets, out_path=out_path,
+                                driver=('GPKG' if driver.upper()=='GPKG' else 'ESRI Shapefile'),
+                                overwrite=overwrite, on_progress=lambda m: log(f"    {m}"),
+                                layer_prefix=layer_prefix) or []
+    finally:
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
     return written
 
 def main():
@@ -85,9 +92,15 @@ def main():
         print(f"[{idx}/{len(cad_files)}] {cad}")
         try:
             if driver == "GPKG":
+                # All files share ONE GeoPackage: only the first file may delete it
+                # (overwrite=True used to wipe the previous files' layers on every
+                # iteration), and layers are prefixed with the file name so
+                # identical CAD layer names in different drawings don't overwrite each other.
+                stem = re.sub(r"\s+", "_", os.path.splitext(os.path.relpath(cad, input_root))[0].replace(os.sep, "__"))
                 written = convert_one(cad, args.src_epsg, args.tgt_epsg, target_layers,
                                       args.mode, args.merge_tol, driver, out_gpkg,
-                                      args.overwrite, args.dwg_prefer, args.dxf_version)
+                                      args.overwrite and idx == 1, args.dwg_prefer, args.dxf_version,
+                                      layer_prefix=f"{stem}__")
             else:
                 rel = os.path.relpath(os.path.dirname(cad), input_root)
                 sub = os.path.join(output, rel, os.path.splitext(os.path.basename(cad))[0])

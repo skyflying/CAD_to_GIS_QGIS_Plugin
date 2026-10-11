@@ -23,12 +23,8 @@ def _safe_s(val):
         return None
 
 def _in_selected(layer_name: str, selected: Optional[Iterable[str]]) -> bool:
-    if not selected:
-        return False  # IMPORTANT: only extract when layer is selected
-    try:
-        return layer_name in set(selected)
-    except Exception:
-        return False
+    # empty / None selection means ALL layers (same rule as the main conversion)
+    return (not selected) or (layer_name in selected)
 
 def collect_annotations_and_blocks(
     dxf_path: str,
@@ -45,7 +41,8 @@ def collect_annotations_and_blocks(
 
     - Only entities whose *source CAD layer* is present in target_layers will be extracted.
 
-    - If target_layers is empty/None, nothing is extracted (user must select layers explicitly).
+    - If target_layers is empty/None, ALL layers are used (the old version extracted
+      nothing in that case, although the UI says "leave empty for all").
 
     """
     if gpd is None:
@@ -64,12 +61,12 @@ def collect_annotations_and_blocks(
     sel = set(target_layers or [])
 
     # TEXT / MTEXT
-    if include_text and sel:
+    if include_text:
         rows_text: List[dict] = []
         for e in msp.query("TEXT MTEXT"):
             try:
                 src_layer = (getattr(e.dxf, "layer", "0") or "0")
-                if src_layer not in sel:
+                if not _in_selected(src_layer, sel):
                     continue  # filter by selected layers
                 if e.dxftype() == "TEXT":
                     ip = e.dxf.insert
@@ -98,12 +95,12 @@ def collect_annotations_and_blocks(
                 out[(str(layer), str(geom))] = sub.reset_index(drop=True)
 
     # BLOCK INSERT (attributes)
-    if include_blocks and sel:
+    if include_blocks:
         rows_blk: List[dict] = []
         for ins in msp.query("INSERT"):
             try:
                 src_layer = (getattr(ins.dxf, "layer", "0") or "0")
-                if src_layer not in sel:
+                if not _in_selected(src_layer, sel):
                     continue  # filter by selected layers
                 ip = ins.dxf.insert
                 row = {
@@ -111,7 +108,9 @@ def collect_annotations_and_blocks(
                     "src_layer": src_layer, "block_name": _safe_s(getattr(ins.dxf, "name", None) or getattr(ins, "name", None)),
                 }
                 try:
-                    for a in ins.attribs():  # type: ignore[attr-defined]
+                    # ezdxf: Insert.attribs is a list property, not a method -- the old
+                    # call ins.attribs() raised TypeError and no attribute was ever read
+                    for a in (ins.attribs or []):
                         tag = _safe_s(getattr(a.dxf, "tag", None))
                         val = _safe_s(getattr(a.dxf, "text", None))
                         if tag: row[f"att_{tag}"] = val
